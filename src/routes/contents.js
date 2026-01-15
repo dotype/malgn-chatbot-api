@@ -1,11 +1,11 @@
 /**
- * Documents Routes
+ * Contents Routes
  *
- * 문서 관리 API 엔드포인트
- * GET /documents - 문서 목록 조회
- * POST /documents - 문서 등록 (텍스트, 파일, 링크)
- * GET /documents/:id - 문서 상세 조회
- * DELETE /documents/:id - 문서 삭제
+ * 콘텐츠 관리 API 엔드포인트
+ * GET /contents - 콘텐츠 목록 조회
+ * POST /contents - 콘텐츠 등록 (텍스트, 파일, 링크)
+ * GET /contents/:id - 콘텐츠 상세 조회
+ * DELETE /contents/:id - 콘텐츠 삭제
  *
  * 지원 형식:
  * - 텍스트: JSON { type: 'text', title, content }
@@ -13,25 +13,25 @@
  * - 링크: JSON { type: 'link', title, url }
  */
 import { Hono } from 'hono';
-import { DocumentService } from '../services/documentService.js';
+import { ContentService } from '../services/contentService.js';
 
-const documents = new Hono();
+const contents = new Hono();
 
 /**
- * GET /documents
- * 업로드된 문서 목록 조회
+ * GET /contents
+ * 업로드된 콘텐츠 목록 조회
  *
  * Query Parameters:
  * - page: 페이지 번호 (기본값: 1)
  * - limit: 페이지당 개수 (기본값: 20, 최대: 100)
  */
-documents.get('/', async (c) => {
+contents.get('/', async (c) => {
   try {
     const page = Math.max(1, parseInt(c.req.query('page') || '1'));
     const limit = Math.min(100, Math.max(1, parseInt(c.req.query('limit') || '20')));
 
-    const documentService = new DocumentService(c.env);
-    const result = await documentService.listDocuments(page, limit);
+    const contentService = new ContentService(c.env);
+    const result = await contentService.listContents(page, limit);
 
     return c.json({
       success: true,
@@ -39,30 +39,30 @@ documents.get('/', async (c) => {
     });
 
   } catch (error) {
-    console.error('List documents error:', error);
+    console.error('List contents error:', error);
     return c.json({
       success: false,
       error: {
         code: 'INTERNAL_ERROR',
-        message: '문서 목록 조회 중 오류가 발생했습니다.'
+        message: '콘텐츠 목록 조회 중 오류가 발생했습니다.'
       }
     }, 500);
   }
 });
 
 /**
- * POST /documents
- * 새 문서 업로드
+ * POST /contents
+ * 새 콘텐츠 업로드
  *
  * 지원 형식:
  * 1. 텍스트 (JSON): { type: 'text', title, content }
  * 2. 링크 (JSON): { type: 'link', title, url }
  * 3. 파일 (FormData): file, title
  */
-documents.post('/', async (c) => {
+contents.post('/', async (c) => {
   try {
     const contentType = c.req.header('content-type') || '';
-    const documentService = new DocumentService(c.env);
+    const contentService = new ContentService(c.env);
 
     // JSON 요청 (텍스트 또는 링크)
     if (contentType.includes('application/json')) {
@@ -91,7 +91,7 @@ documents.post('/', async (c) => {
           }, 400);
         }
 
-        const result = await documentService.uploadText(title, content);
+        const result = await contentService.uploadText(title, content);
         return c.json({
           success: true,
           data: result,
@@ -120,7 +120,7 @@ documents.post('/', async (c) => {
           }, 400);
         }
 
-        const result = await documentService.uploadLink(title, url);
+        const result = await contentService.uploadLink(title, url);
         return c.json({
           success: true,
           data: result,
@@ -177,17 +177,17 @@ documents.post('/', async (c) => {
       }, 415);
     }
 
-    // 문서 서비스 호출
-    const result = await documentService.uploadDocument(file, title);
+    // 콘텐츠 서비스 호출
+    const result = await contentService.uploadFile(file, title);
 
     return c.json({
       success: true,
       data: result,
-      message: '문서가 성공적으로 업로드되었습니다.'
+      message: '콘텐츠가 성공적으로 업로드되었습니다.'
     }, 201);
 
   } catch (error) {
-    console.error('Upload document error:', error);
+    console.error('Upload content error:', error);
 
     // URL 관련 에러
     if (error.message.includes('URL')) {
@@ -239,7 +239,7 @@ documents.post('/', async (c) => {
         success: false,
         error: {
           code: 'EMBEDDING_ERROR',
-          message: '문서 처리 중 오류가 발생했습니다.'
+          message: '콘텐츠 처리 중 오류가 발생했습니다.'
         }
       }, 500);
     }
@@ -248,17 +248,17 @@ documents.post('/', async (c) => {
       success: false,
       error: {
         code: 'INTERNAL_ERROR',
-        message: '문서 업로드 중 오류가 발생했습니다.'
+        message: '콘텐츠 업로드 중 오류가 발생했습니다.'
       }
     }, 500);
   }
 });
 
 /**
- * GET /documents/:id
- * 문서 상세 조회
+ * GET /contents/:id
+ * 콘텐츠 상세 조회
  */
-documents.get('/:id', async (c) => {
+contents.get('/:id', async (c) => {
   try {
     const id = parseInt(c.req.param('id'), 10);
 
@@ -267,46 +267,46 @@ documents.get('/:id', async (c) => {
         success: false,
         error: {
           code: 'VALIDATION_ERROR',
-          message: '유효한 문서 ID가 필요합니다.'
+          message: '유효한 콘텐츠 ID가 필요합니다.'
         }
       }, 400);
     }
 
-    const documentService = new DocumentService(c.env);
-    const document = await documentService.getDocument(id);
+    const contentService = new ContentService(c.env);
+    const content = await contentService.getContent(id);
 
-    if (!document) {
+    if (!content) {
       return c.json({
         success: false,
         error: {
           code: 'NOT_FOUND',
-          message: '문서를 찾을 수 없습니다.'
+          message: '콘텐츠를 찾을 수 없습니다.'
         }
       }, 404);
     }
 
     return c.json({
       success: true,
-      data: document
+      data: content
     });
 
   } catch (error) {
-    console.error('Get document error:', error);
+    console.error('Get content error:', error);
     return c.json({
       success: false,
       error: {
         code: 'INTERNAL_ERROR',
-        message: '문서 조회 중 오류가 발생했습니다.'
+        message: '콘텐츠 조회 중 오류가 발생했습니다.'
       }
     }, 500);
   }
 });
 
 /**
- * DELETE /documents/:id
- * 문서 삭제
+ * DELETE /contents/:id
+ * 콘텐츠 삭제
  */
-documents.delete('/:id', async (c) => {
+contents.delete('/:id', async (c) => {
   try {
     const id = parseInt(c.req.param('id'), 10);
 
@@ -315,39 +315,39 @@ documents.delete('/:id', async (c) => {
         success: false,
         error: {
           code: 'VALIDATION_ERROR',
-          message: '유효한 문서 ID가 필요합니다.'
+          message: '유효한 콘텐츠 ID가 필요합니다.'
         }
       }, 400);
     }
 
-    const documentService = new DocumentService(c.env);
-    const deleted = await documentService.deleteDocument(id);
+    const contentService = new ContentService(c.env);
+    const deleted = await contentService.deleteContent(id);
 
     if (!deleted) {
       return c.json({
         success: false,
         error: {
           code: 'NOT_FOUND',
-          message: '문서를 찾을 수 없습니다.'
+          message: '콘텐츠를 찾을 수 없습니다.'
         }
       }, 404);
     }
 
     return c.json({
       success: true,
-      message: '문서가 성공적으로 삭제되었습니다.'
+      message: '콘텐츠가 성공적으로 삭제되었습니다.'
     });
 
   } catch (error) {
-    console.error('Delete document error:', error);
+    console.error('Delete content error:', error);
     return c.json({
       success: false,
       error: {
         code: 'INTERNAL_ERROR',
-        message: '문서 삭제 중 오류가 발생했습니다.'
+        message: '콘텐츠 삭제 중 오류가 발생했습니다.'
       }
     }, 500);
   }
 });
 
-export default documents;
+export default contents;

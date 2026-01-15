@@ -1,7 +1,7 @@
 /**
- * Document Service
+ * Content Service
  *
- * 문서 업로드, 조회, 삭제를 처리하는 서비스입니다.
+ * 콘텐츠 업로드, 조회, 삭제를 처리하는 서비스입니다.
  * - 파일에서 텍스트 추출
  * - 청크 분할
  * - D1에 메타데이터 저장
@@ -9,16 +9,16 @@
  */
 import { EmbeddingService } from './embeddingService.js';
 
-export class DocumentService {
+export class ContentService {
   constructor(env) {
     this.env = env;
     this.embeddingService = new EmbeddingService(env);
   }
 
   /**
-   * 문서 목록 조회
+   * 콘텐츠 목록 조회
    */
-  async listDocuments(page = 1, limit = 20) {
+  async listContents(page = 1, limit = 20) {
     const offset = (page - 1) * limit;
 
     // 전체 개수 조회 (status = 1만)
@@ -27,7 +27,7 @@ export class DocumentService {
       .first();
     const total = countResult?.total || 0;
 
-    // 문서 목록 조회 (status = 1만)
+    // 콘텐츠 목록 조회 (status = 1만)
     const { results } = await this.env.DB
       .prepare(`
         SELECT id, content_nm, filename, file_type, file_size, chunk_count, status, created_at
@@ -40,7 +40,7 @@ export class DocumentService {
       .all();
 
     return {
-      documents: results || [],
+      contents: results || [],
       pagination: {
         page,
         limit,
@@ -51,16 +51,16 @@ export class DocumentService {
   }
 
   /**
-   * 문서 상세 조회
+   * 콘텐츠 상세 조회
    */
-  async getDocument(id) {
-    // 문서 메타데이터 조회 (status = 1만)
-    const document = await this.env.DB
+  async getContent(id) {
+    // 콘텐츠 메타데이터 조회 (status = 1만)
+    const content = await this.env.DB
       .prepare('SELECT * FROM TB_CONTENT WHERE id = ? AND status = 1')
       .bind(id)
       .first();
 
-    if (!document) {
+    if (!content) {
       return null;
     }
 
@@ -76,7 +76,7 @@ export class DocumentService {
       .all();
 
     return {
-      ...document,
+      ...content,
       chunks: chunks || []
     };
   }
@@ -99,26 +99,26 @@ export class DocumentService {
       throw new Error('유효한 내용이 없습니다.');
     }
 
-    const docTitle = title.trim();
+    const contentTitle = title.trim();
     const contentSize = new TextEncoder().encode(content).length;
 
-    // D1에 문서 메타데이터 저장 (AUTOINCREMENT로 ID 자동 생성)
+    // D1에 콘텐츠 메타데이터 저장 (AUTOINCREMENT로 ID 자동 생성)
     const insertResult = await this.env.DB
       .prepare(`
         INSERT INTO TB_CONTENT (content_nm, filename, file_type, file_size, chunk_count)
         VALUES (?, ?, ?, ?, ?)
       `)
-      .bind(docTitle, '', 'text', contentSize, chunks.length)
+      .bind(contentTitle, '', 'text', contentSize, chunks.length)
       .run();
 
     const contentId = insertResult.meta.last_row_id;
 
     // 청크 처리 및 임베딩 생성
-    await this.processChunks(contentId, docTitle, chunks);
+    await this.processChunks(contentId, contentTitle, chunks);
 
     return {
       id: contentId,
-      title: docTitle,
+      title: contentTitle,
       type: 'text',
       fileSize: contentSize,
       chunkCount: chunks.length,
@@ -183,26 +183,26 @@ export class DocumentService {
       throw new Error('유효한 내용이 없습니다.');
     }
 
-    const docTitle = title.trim();
+    const contentTitle = title.trim();
     const contentSize = new TextEncoder().encode(content).length;
 
-    // D1에 문서 메타데이터 저장
+    // D1에 콘텐츠 메타데이터 저장
     const insertResult = await this.env.DB
       .prepare(`
         INSERT INTO TB_CONTENT (content_nm, filename, file_type, file_size, chunk_count)
         VALUES (?, ?, ?, ?, ?)
       `)
-      .bind(docTitle, url, 'link', contentSize, chunks.length)
+      .bind(contentTitle, url, 'link', contentSize, chunks.length)
       .run();
 
     const contentId = insertResult.meta.last_row_id;
 
     // 청크 처리 및 임베딩 생성
-    await this.processChunks(contentId, docTitle, chunks);
+    await this.processChunks(contentId, contentTitle, chunks);
 
     return {
       id: contentId,
-      title: docTitle,
+      title: contentTitle,
       type: 'link',
       url,
       fileSize: contentSize,
@@ -242,7 +242,7 @@ export class DocumentService {
   /**
    * 파일 업로드 및 처리
    */
-  async uploadDocument(file, title = null) {
+  async uploadFile(file, title = null) {
     // 파일 정보 추출
     const filename = file.name;
     const fileType = this.getFileType(filename);
@@ -268,28 +268,28 @@ export class DocumentService {
     // 청크 분할
     const chunks = this.embeddingService.splitIntoChunks(text);
     if (chunks.length === 0) {
-      throw new Error('문서에 유효한 내용이 없습니다.');
+      throw new Error('콘텐츠에 유효한 내용이 없습니다.');
     }
 
-    const docTitle = title || filename.replace(/\.[^/.]+$/, '');
+    const contentTitle = title || filename.replace(/\.[^/.]+$/, '');
 
-    // D1에 문서 메타데이터 저장
+    // D1에 콘텐츠 메타데이터 저장
     const insertResult = await this.env.DB
       .prepare(`
         INSERT INTO TB_CONTENT (content_nm, filename, file_type, file_size, chunk_count)
         VALUES (?, ?, ?, ?, ?)
       `)
-      .bind(docTitle, filename, fileType, fileSize, chunks.length)
+      .bind(contentTitle, filename, fileType, fileSize, chunks.length)
       .run();
 
     const contentId = insertResult.meta.last_row_id;
 
     // 청크 처리 및 임베딩 생성
-    await this.processChunks(contentId, docTitle, chunks);
+    await this.processChunks(contentId, contentTitle, chunks);
 
     return {
       id: contentId,
-      title: docTitle,
+      title: contentTitle,
       filename,
       fileType,
       fileSize,
@@ -339,16 +339,16 @@ export class DocumentService {
   }
 
   /**
-   * 문서 삭제 (Soft Delete)
+   * 콘텐츠 삭제 (Soft Delete)
    */
-  async deleteDocument(id) {
-    // 문서 존재 확인 (status = 1만)
-    const document = await this.env.DB
+  async deleteContent(id) {
+    // 콘텐츠 존재 확인 (status = 1만)
+    const content = await this.env.DB
       .prepare('SELECT id FROM TB_CONTENT WHERE id = ? AND status = 1')
       .bind(id)
       .first();
 
-    if (!document) {
+    if (!content) {
       return false;
     }
 
@@ -370,7 +370,7 @@ export class DocumentService {
       .bind(id)
       .run();
 
-    // 문서 soft delete (status = -1)
+    // 콘텐츠 soft delete (status = -1)
     await this.env.DB
       .prepare('UPDATE TB_CONTENT SET status = -1, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
       .bind(id)

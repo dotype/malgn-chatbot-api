@@ -10,7 +10,7 @@ import { logger } from 'hono/logger';
 
 // Import routes
 import chatRoutes from './routes/chat.js';
-import documentsRoutes from './routes/documents.js';
+import contentsRoutes from './routes/contents.js';
 import sessionsRoutes from './routes/sessions.js';
 
 // Import middleware
@@ -19,7 +19,7 @@ import { errorHandler } from './middleware/errorHandler.js';
 const app = new Hono();
 
 // Paths that don't require authentication (현재 모든 경로 공개)
-const PUBLIC_PATHS = ['/health', '/docs', '/openapi.json', '/chat', '/documents', '/sessions'];
+const PUBLIC_PATHS = ['/health', '/docs', '/openapi.json', '/chat', '/contents', '/sessions'];
 
 // Global middleware
 app.use('*', logger());
@@ -33,7 +33,7 @@ app.use('*', cors({
 
 // Routes
 app.route('/chat', chatRoutes);
-app.route('/documents', documentsRoutes);
+app.route('/contents', contentsRoutes);
 app.route('/sessions', sessionsRoutes);
 
 // Root endpoint
@@ -45,11 +45,11 @@ app.get('/', (c) => {
     environment: c.env.ENVIRONMENT || 'unknown',
     endpoints: {
       chat: 'POST /chat',
-      documents: {
-        list: 'GET /documents',
-        upload: 'POST /documents',
-        get: 'GET /documents/:id',
-        delete: 'DELETE /documents/:id'
+      contents: {
+        list: 'GET /contents',
+        upload: 'POST /contents',
+        get: 'GET /contents/:id',
+        delete: 'DELETE /contents/:id'
       },
       sessions: {
         list: 'GET /sessions',
