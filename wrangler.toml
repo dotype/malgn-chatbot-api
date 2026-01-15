@@ -1,0 +1,83 @@
+name = "malgn-chatbot-api"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# Environment variables (non-sensitive)
+[vars]
+ENVIRONMENT = "development"
+
+# Development environment
+[env.dev]
+name = "malgn-chatbot-api-dev"
+vars = { ENVIRONMENT = "development" }
+
+# Production environment
+[env.production]
+name = "malgn-chatbot-api-prod"
+vars = { ENVIRONMENT = "production" }
+
+# ============================================
+# Cloudflare Bindings Configuration
+# ============================================
+
+# Workers AI (LLM and Embeddings)
+# Automatically available, no configuration needed
+[ai]
+binding = "AI"
+
+# Vectorize (Vector Database for RAG)
+# Create with: wrangler vectorize create chatbot-docs --dimensions=768 --metric=cosine
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "chatbot-docs"
+
+# D1 Database (SQLite - Document metadata)
+# Create with: wrangler d1 create chatbot-db
+[[d1_databases]]
+binding = "DB"
+database_name = "chatbot-db"
+database_id = "your-database-id"  # Replace with actual ID after creation
+
+# KV Namespace (Cache and Session storage)
+# Create with: wrangler kv:namespace create "KV"
+[[kv_namespaces]]
+binding = "KV"
+id = "your-kv-namespace-id"  # Replace with actual ID after creation
+
+# R2 Bucket (Original file storage - optional)
+# Create with: wrangler r2 bucket create chatbot-files
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "chatbot-files"
+
+# ============================================
+# Environment Variables
+# ============================================
+#
+# LOCAL DEVELOPMENT (.dev.vars):
+#   ENVIRONMENT=development
+#
+# PRODUCTION (Wrangler Secrets):
+#   No secrets required for basic operation
+#
+# ============================================
+# Setup Commands (Run once)
+# ============================================
+#
+# 1. Create D1 database:
+#    wrangler d1 create chatbot-db
+#    -> Copy the database_id to this file
+#
+# 2. Create Vectorize index:
+#    wrangler vectorize create chatbot-docs --dimensions=768 --metric=cosine
+#
+# 3. Create KV namespace:
+#    wrangler kv:namespace create "KV"
+#    -> Copy the id to this file
+#
+# 4. Create R2 bucket (optional):
+#    wrangler r2 bucket create chatbot-files
+#
+# 5. Apply D1 schema:
+#    wrangler d1 execute chatbot-db --local --file=./schema.sql
+#    wrangler d1 execute chatbot-db --file=./schema.sql  # for remote
