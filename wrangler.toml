@@ -29,7 +29,7 @@ binding = "AI"
 id = "malgn-chatbot"
 
 # Vectorize (Vector Database for RAG)
-# Create with: wrangler vectorize create malgn-chatbot-vectors --dimensions=1536 --metric=cosine
+# Create with: wrangler vectorize create malgn-chatbot-vectors --dimensions=768 --metric=cosine
 [[vectorize]]
 binding = "VECTORIZE"
 index_name = "malgn-chatbot-vectors"
