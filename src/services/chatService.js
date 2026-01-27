@@ -89,17 +89,23 @@ export class ChatService {
     // 2. Vectorize에서 유사 콘텐츠 검색 (콘텐츠 필터링 적용, 학습 목표/요약 포함)
     const searchResults = await this.searchSimilarDocuments(queryEmbedding, 5, allowedContentIds, currentSessionId);
 
-    // 3. 검색 결과가 없거나 유사도가 낮으면 기본 응답
+    // 3. 검색 결과가 없으면 세션 학습 데이터로 fallback
+    let context = '';
     if (searchResults.length === 0) {
-      return {
-        response: '죄송합니다. 해당 질문에 대한 학습된 정보가 없습니다. 다른 질문을 해주시거나, 관련 문서를 업로드해 주세요.',
-        sources: [],
-        sessionId: currentSessionId
-      };
-    }
+      console.log('[ChatService] No search results, trying session learning data fallback');
+      context = await this.getSessionLearningContext(currentSessionId, allowedContentIds);
 
-    // 4. 컨텍스트 구성
-    const context = await this.buildContext(searchResults);
+      if (!context) {
+        return {
+          response: '죄송합니다. 해당 질문에 대한 학습된 정보가 없습니다. 다른 질문을 해주시거나, 관련 문서를 업로드해 주세요.',
+          sources: [],
+          sessionId: currentSessionId
+        };
+      }
+    } else {
+      // 4. 컨텍스트 구성
+      context = await this.buildContext(searchResults);
+    }
 
     // 5. LLM으로 응답 생성
     const response = await this.generateResponse(message, context);
@@ -138,11 +144,15 @@ export class ChatService {
         returnValues: false
       });
 
-      // 유사도 임계값 필터링 (0.7 이상만)
-      const threshold = 0.7;
+      console.log('[ChatService] Vectorize search results:', results.matches?.length || 0, 'matches');
+
+      // 유사도 임계값 필터링 (0.5 이상 - 추천 질문도 매칭되도록 낮춤)
+      const threshold = 0.5;
       let filtered = (results.matches || []).filter(
         match => match.score >= threshold
       );
+
+      console.log('[ChatService] After threshold filter:', filtered.length, 'matches');
 
       // 학습 목표/요약과 콘텐츠 분리
       const learningResults = [];
@@ -150,19 +160,23 @@ export class ChatService {
 
       for (const match of filtered) {
         const type = match.metadata?.type;
+        const metaSessionId = match.metadata?.sessionId;
 
-        // 학습 목표/요약은 해당 세션의 것만
+        // 학습 목표/요약은 해당 세션의 것만 (타입 변환 비교)
         if (type === 'learning_goal' || type === 'learning_summary') {
-          if (sessionId && match.metadata?.sessionId === sessionId) {
+          if (sessionId && Number(metaSessionId) === Number(sessionId)) {
             learningResults.push(match);
           }
         } else if (type === 'content') {
           // 콘텐츠는 ID 필터링
-          if (allowedContentIds.length === 0 || allowedContentIds.includes(match.metadata?.contentId)) {
+          const contentId = match.metadata?.contentId;
+          if (allowedContentIds.length === 0 || allowedContentIds.includes(Number(contentId))) {
             contentResults.push(match);
           }
         }
       }
+
+      console.log('[ChatService] Learning results:', learningResults.length, 'Content results:', contentResults.length);
 
       // 학습 목표/요약 우선 + 콘텐츠 결합
       return [...learningResults, ...contentResults.slice(0, topK)];
@@ -223,6 +237,53 @@ export class ChatService {
     }
 
     return contextParts.join('\n\n---\n\n');
+  }
+
+  /**
+   * 세션 학습 데이터와 콘텐츠로 컨텍스트 구성 (Vectorize 검색 실패 시 fallback)
+   */
+  async getSessionLearningContext(sessionId, contentIds) {
+    if (!sessionId) return null;
+
+    try {
+      const contextParts = [];
+
+      // 세션의 학습 데이터 조회
+      const session = await this.env.DB
+        .prepare('SELECT learning_goal, learning_summary FROM TB_SESSION WHERE id = ? AND status = 1')
+        .bind(sessionId)
+        .first();
+
+      if (session?.learning_goal) {
+        contextParts.push(`[학습 목표]\n${session.learning_goal}`);
+      }
+      if (session?.learning_summary) {
+        contextParts.push(`[학습 요약]\n${session.learning_summary}`);
+      }
+
+      // 연결된 콘텐츠 조회
+      if (contentIds && contentIds.length > 0) {
+        const placeholders = contentIds.map(() => '?').join(',');
+        const { results } = await this.env.DB
+          .prepare(`SELECT content_nm, content FROM TB_CONTENT WHERE id IN (${placeholders}) AND status = 1`)
+          .bind(...contentIds)
+          .all();
+
+        for (const content of (results || [])) {
+          if (content.content) {
+            contextParts.push(`[${content.content_nm}]\n${content.content}`);
+          }
+        }
+      }
+
+      if (contextParts.length === 0) return null;
+
+      console.log('[ChatService] Using session learning context fallback, parts:', contextParts.length);
+      return contextParts.join('\n\n---\n\n');
+    } catch (error) {
+      console.error('Get session learning context error:', error);
+      return null;
+    }
   }
 
   /**
