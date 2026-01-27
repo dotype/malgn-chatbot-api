@@ -3,14 +3,14 @@
 -- ============================================
 -- status: 1(정상), 0(중지), -1(삭제)
 
--- TB_CONTENT: 학습 콘텐츠 메타데이터
+-- TB_CONTENT: 학습 콘텐츠
 CREATE TABLE IF NOT EXISTS TB_CONTENT (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   content_nm TEXT NOT NULL,
   filename TEXT NOT NULL,
   file_type TEXT NOT NULL,
   file_size INTEGER NOT NULL,
-  chunk_count INTEGER DEFAULT 0,
+  content TEXT,
   status INTEGER DEFAULT 1,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -20,27 +20,11 @@ CREATE TABLE IF NOT EXISTS TB_CONTENT (
 CREATE INDEX IF NOT EXISTS idx_content_created_at ON TB_CONTENT(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_content_status ON TB_CONTENT(status);
 
--- TB_CHUNK: 콘텐츠 청크 (텍스트 조각)
-CREATE TABLE IF NOT EXISTS TB_CHUNK (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  content_id INTEGER NOT NULL,
-  content TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  token_count INTEGER,
-  status INTEGER DEFAULT 1,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (content_id) REFERENCES TB_CONTENT(id) ON DELETE CASCADE
-);
-
--- Index for content lookup
-CREATE INDEX IF NOT EXISTS idx_chunk_content_id ON TB_CHUNK(content_id);
-CREATE INDEX IF NOT EXISTS idx_chunk_position ON TB_CHUNK(content_id, position);
-CREATE INDEX IF NOT EXISTS idx_chunk_status ON TB_CHUNK(status);
-
 -- TB_SESSION: 채팅 세션
 CREATE TABLE IF NOT EXISTS TB_SESSION (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER,
+  session_nm TEXT,
   persona TEXT DEFAULT '당신은 친절하고 전문적인 AI 튜터입니다. 학생들이 이해하기 쉽게 설명하고, 질문에 정확하게 답변해 주세요.',
   temperature REAL DEFAULT 0.7,
   top_p REAL DEFAULT 0.9,
@@ -48,6 +32,9 @@ CREATE TABLE IF NOT EXISTS TB_SESSION (
   summary_count INTEGER DEFAULT 3,
   recommend_count INTEGER DEFAULT 5,
   quiz_count INTEGER DEFAULT 5,
+  learning_goal TEXT,
+  learning_summary TEXT,
+  recommended_questions TEXT,
   status INTEGER DEFAULT 1,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -90,3 +77,23 @@ CREATE TABLE IF NOT EXISTS TB_SESSION_CONTENT (
 CREATE INDEX IF NOT EXISTS idx_session_content_session ON TB_SESSION_CONTENT(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_content_content ON TB_SESSION_CONTENT(content_id);
 CREATE INDEX IF NOT EXISTS idx_session_content_status ON TB_SESSION_CONTENT(status);
+
+-- TB_QUIZ: 퀴즈
+-- quiz_type: 'choice' (4지선다), 'ox' (OX퀴즈)
+CREATE TABLE IF NOT EXISTS TB_QUIZ (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL,
+  quiz_type TEXT NOT NULL CHECK (quiz_type IN ('choice', 'ox')),
+  question TEXT NOT NULL,
+  options TEXT,
+  answer TEXT NOT NULL,
+  explanation TEXT,
+  position INTEGER NOT NULL,
+  status INTEGER DEFAULT 1,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (session_id) REFERENCES TB_SESSION(id) ON DELETE CASCADE
+);
+
+-- Index for quiz lookup
+CREATE INDEX IF NOT EXISTS idx_quiz_session ON TB_QUIZ(session_id, position);
+CREATE INDEX IF NOT EXISTS idx_quiz_status ON TB_QUIZ(status);

@@ -5,9 +5,13 @@
  * GET /sessions - 세션 목록 조회
  * POST /sessions - 새 세션 생성
  * GET /sessions/:id - 세션 상세 조회 (메시지 포함)
+ * GET /sessions/:id/quizzes - 세션 퀴즈 조회
+ * POST /sessions/:id/quizzes - 퀴즈 생성
  * DELETE /sessions/:id - 세션 삭제
  */
 import { Hono } from 'hono';
+import { QuizService } from '../services/quizService.js';
+import { LearningService } from '../services/learningService.js';
 
 const sessions = new Hono();
 
@@ -36,6 +40,7 @@ sessions.get('/', async (c) => {
       .prepare(`
         SELECT
           s.id,
+          s.session_nm,
           s.created_at,
           s.updated_at,
           (SELECT content FROM TB_MESSAGE WHERE session_id = s.id AND status = 1 ORDER BY created_at ASC LIMIT 1) as firstMessage,
@@ -49,19 +54,25 @@ sessions.get('/', async (c) => {
       .bind(limit, offset)
       .all();
 
-    // 제목 생성 (첫 번째 메시지 기반)
-    const sessionsWithTitle = (results || []).map(session => ({
-      id: session.id,
-      title: session.firstMessage
-        ? session.firstMessage.substring(0, 30) + (session.firstMessage.length > 30 ? '...' : '')
-        : '새 대화',
-      lastMessage: session.lastMessage
-        ? session.lastMessage.substring(0, 50) + (session.lastMessage.length > 50 ? '...' : '')
-        : null,
-      messageCount: session.messageCount || 0,
-      created_at: session.created_at,
-      updated_at: session.updated_at
-    }));
+    // 제목: DB 저장된 제목 우선, 없으면 첫 메시지 기반 생성
+    const sessionsWithTitle = (results || []).map(session => {
+      let title = session.session_nm;
+      if (!title) {
+        title = session.firstMessage
+          ? session.firstMessage.substring(0, 30) + (session.firstMessage.length > 30 ? '...' : '')
+          : '새 대화';
+      }
+      return {
+        id: session.id,
+        title,
+        lastMessage: session.lastMessage
+          ? session.lastMessage.substring(0, 50) + (session.lastMessage.length > 50 ? '...' : '')
+          : null,
+        messageCount: session.messageCount || 0,
+        created_at: session.created_at,
+        updated_at: session.updated_at
+      };
+    });
 
     return c.json({
       success: true,
@@ -92,13 +103,13 @@ sessions.get('/', async (c) => {
  * POST /sessions
  * 새 세션 생성
  *
- * Body (optional):
- * - user_id: 사용자 ID
- * - content_ids: 연결할 콘텐츠 ID 배열 (답변 범위 설정)
+ * Body:
+ * - user_id: 사용자 ID (선택)
+ * - content_ids: 연결할 콘텐츠 ID 배열 (필수, 최소 1개)
  */
 sessions.post('/', async (c) => {
   try {
-    // 요청 본문 파싱 (선택적)
+    // 요청 본문 파싱
     let userId = null;
     let contentIds = [];
 
@@ -107,7 +118,18 @@ sessions.post('/', async (c) => {
       userId = body.user_id || null;
       contentIds = Array.isArray(body.content_ids) ? body.content_ids : [];
     } catch {
-      // JSON 파싱 실패 시 기본값 사용
+      // JSON 파싱 실패
+    }
+
+    // 학습 자료 필수 검증
+    if (contentIds.length === 0) {
+      return c.json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: '최소 하나 이상의 학습 자료를 선택해 주세요.'
+        }
+      }, 400);
     }
 
     // 세션 생성
@@ -128,7 +150,11 @@ sessions.post('/', async (c) => {
       }
     }
 
-    // 생성된 세션 조회
+    // 학습 목표, 요약, 추천 질문 생성 및 Vectorize에 저장
+    const learningService = new LearningService(c.env);
+    const learningData = await learningService.generateAndStoreLearningData(sessionId, contentIds);
+
+    // 생성된 세션 조회 (학습 데이터 포함)
     const session = await c.env.DB
       .prepare('SELECT * FROM TB_SESSION WHERE id = ?')
       .bind(sessionId)
@@ -150,7 +176,7 @@ sessions.post('/', async (c) => {
       data: {
         id: sessionId,
         userId: session.user_id,
-        title: '새 대화',
+        title: learningData.sessionNm || '새 대화',
         settings: {
           persona: session.persona,
           temperature: session.temperature,
@@ -159,6 +185,11 @@ sessions.post('/', async (c) => {
           summaryCount: session.summary_count,
           recommendCount: session.recommend_count,
           quizCount: session.quiz_count
+        },
+        learning: {
+          goal: learningData.learningGoal,
+          summary: learningData.learningSummary,
+          recommendedQuestions: learningData.recommendedQuestions
         },
         contents: linkedContents || [],
         lastMessage: null,
@@ -237,11 +268,24 @@ sessions.get('/:id', async (c) => {
       .bind(id)
       .all();
 
-    // 제목 생성
-    const firstUserMessage = (messages || []).find(m => m.role === 'user');
-    const title = firstUserMessage
-      ? firstUserMessage.content.substring(0, 30) + (firstUserMessage.content.length > 30 ? '...' : '')
-      : '새 대화';
+    // 제목: DB에 저장된 제목 사용, 없으면 첫 메시지 기반 생성
+    let title = session.session_nm;
+    if (!title) {
+      const firstUserMessage = (messages || []).find(m => m.role === 'user');
+      title = firstUserMessage
+        ? firstUserMessage.content.substring(0, 30) + (firstUserMessage.content.length > 30 ? '...' : '')
+        : '새 대화';
+    }
+
+    // 추천 질문 파싱
+    let recommendedQuestions = [];
+    if (session.recommended_questions) {
+      try {
+        recommendedQuestions = JSON.parse(session.recommended_questions);
+      } catch {
+        recommendedQuestions = [];
+      }
+    }
 
     return c.json({
       success: true,
@@ -257,6 +301,11 @@ sessions.get('/:id', async (c) => {
           summaryCount: session.summary_count,
           recommendCount: session.recommend_count,
           quizCount: session.quiz_count
+        },
+        learning: {
+          goal: session.learning_goal || null,
+          summary: session.learning_summary || null,
+          recommendedQuestions: recommendedQuestions
         },
         contents: linkedContents || [],
         messages: messages || [],
@@ -391,6 +440,167 @@ sessions.put('/:id', async (c) => {
 });
 
 /**
+ * GET /sessions/:id/quizzes
+ * 세션 퀴즈 조회
+ */
+sessions.get('/:id/quizzes', async (c) => {
+  try {
+    const id = parseInt(c.req.param('id'), 10);
+
+    if (isNaN(id) || id <= 0) {
+      return c.json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: '유효한 세션 ID가 필요합니다.'
+        }
+      }, 400);
+    }
+
+    // 세션 존재 확인 (status = 1만)
+    const session = await c.env.DB
+      .prepare('SELECT id FROM TB_SESSION WHERE id = ? AND status = 1')
+      .bind(id)
+      .first();
+
+    if (!session) {
+      return c.json({
+        success: false,
+        error: {
+          code: 'NOT_FOUND',
+          message: '세션을 찾을 수 없습니다.'
+        }
+      }, 404);
+    }
+
+    // 퀴즈 조회
+    const quizService = new QuizService(c.env);
+    const quizzes = await quizService.getQuizzesBySession(id);
+
+    return c.json({
+      success: true,
+      data: {
+        sessionId: id,
+        quizzes,
+        total: quizzes.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Get quizzes error:', error);
+    return c.json({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: '퀴즈 조회 중 오류가 발생했습니다.'
+      }
+    }, 500);
+  }
+});
+
+/**
+ * POST /sessions/:id/quizzes
+ * 퀴즈 생성
+ *
+ * Body (optional):
+ * - count: 생성할 퀴즈 수 (기본값: 세션 설정값)
+ */
+sessions.post('/:id/quizzes', async (c) => {
+  try {
+    const id = parseInt(c.req.param('id'), 10);
+
+    if (isNaN(id) || id <= 0) {
+      return c.json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: '유효한 세션 ID가 필요합니다.'
+        }
+      }, 400);
+    }
+
+    // 세션 조회 (status = 1만)
+    const session = await c.env.DB
+      .prepare('SELECT * FROM TB_SESSION WHERE id = ? AND status = 1')
+      .bind(id)
+      .first();
+
+    if (!session) {
+      return c.json({
+        success: false,
+        error: {
+          code: 'NOT_FOUND',
+          message: '세션을 찾을 수 없습니다.'
+        }
+      }, 404);
+    }
+
+    // 연결된 콘텐츠 ID 조회
+    const { results: contents } = await c.env.DB
+      .prepare(`
+        SELECT content_id
+        FROM TB_SESSION_CONTENT
+        WHERE session_id = ? AND status = 1
+      `)
+      .bind(id)
+      .all();
+
+    const contentIds = (contents || []).map(c => c.content_id);
+
+    if (contentIds.length === 0) {
+      return c.json({
+        success: false,
+        error: {
+          code: 'NO_CONTENT',
+          message: '연결된 학습 콘텐츠가 없습니다.'
+        }
+      }, 400);
+    }
+
+    // 요청 본문에서 퀴즈 수 추출
+    let quizCount = session.quiz_count;
+    try {
+      const body = await c.req.json();
+      if (body.count) {
+        quizCount = Math.max(1, Math.min(20, body.count));
+      }
+    } catch {
+      // 기본값 사용
+    }
+
+    // 기존 퀴즈 삭제 (soft delete)
+    await c.env.DB
+      .prepare('UPDATE TB_QUIZ SET status = -1 WHERE session_id = ?')
+      .bind(id)
+      .run();
+
+    // 퀴즈 생성
+    const quizService = new QuizService(c.env);
+    const quizzes = await quizService.generateQuizzes(id, contentIds, quizCount);
+
+    return c.json({
+      success: true,
+      data: {
+        sessionId: id,
+        quizzes,
+        total: quizzes.length
+      },
+      message: `${quizzes.length}개의 퀴즈가 생성되었습니다.`
+    }, 201);
+
+  } catch (error) {
+    console.error('Generate quizzes error:', error);
+    return c.json({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: '퀴즈 생성 중 오류가 발생했습니다.'
+      }
+    }, 500);
+  }
+});
+
+/**
  * DELETE /sessions/:id
  * 세션 삭제 (Soft Delete)
  */
@@ -435,6 +645,16 @@ sessions.delete('/:id', async (c) => {
       .prepare('UPDATE TB_SESSION_CONTENT SET status = -1 WHERE session_id = ?')
       .bind(id)
       .run();
+
+    // 퀴즈 soft delete (status = -1)
+    await c.env.DB
+      .prepare('UPDATE TB_QUIZ SET status = -1 WHERE session_id = ?')
+      .bind(id)
+      .run();
+
+    // Vectorize에서 학습 임베딩 삭제
+    const learningService = new LearningService(c.env);
+    await learningService.deleteLearningEmbeddings(id);
 
     // 세션 soft delete (status = -1)
     await c.env.DB

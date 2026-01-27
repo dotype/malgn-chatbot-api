@@ -3,7 +3,7 @@
  *
  * RAG 기반 채팅 응답을 생성하는 서비스입니다.
  * 1. 사용자 질문을 임베딩으로 변환
- * 2. Vectorize에서 유사 문서 검색
+ * 2. Vectorize에서 유사 콘텐츠 검색
  * 3. 검색 결과를 컨텍스트로 LLM에 전달
  * 4. 학습된 정보 기반 응답 생성
  */
@@ -83,8 +83,8 @@ export class ChatService {
     // 1. 질문을 임베딩으로 변환
     const queryEmbedding = await this.embeddingService.embed(message);
 
-    // 2. Vectorize에서 유사 문서 검색 (콘텐츠 필터링 적용)
-    const searchResults = await this.searchSimilarDocuments(queryEmbedding, 5, allowedContentIds);
+    // 2. Vectorize에서 유사 콘텐츠 검색 (콘텐츠 필터링 적용, 학습 목표/요약 포함)
+    const searchResults = await this.searchSimilarDocuments(queryEmbedding, 5, allowedContentIds, currentSessionId);
 
     // 3. 검색 결과가 없거나 유사도가 낮으면 기본 응답
     if (searchResults.length === 0) {
@@ -112,12 +112,13 @@ export class ChatService {
   }
 
   /**
-   * Vectorize에서 유사 문서 검색
+   * Vectorize에서 유사 콘텐츠 검색 (학습 목표/요약 포함)
    * @param {number[]} queryEmbedding - 쿼리 임베딩 벡터
-   * @param {number} topK - 검색할 최대 문서 수
+   * @param {number} topK - 검색할 최대 콘텐츠 수
    * @param {number[]} allowedContentIds - 허용된 콘텐츠 ID 배열 (빈 배열이면 전체 검색)
+   * @param {number|null} sessionId - 세션 ID (학습 목표/요약 검색용)
    */
-  async searchSimilarDocuments(queryEmbedding, topK = 5, allowedContentIds = []) {
+  async searchSimilarDocuments(queryEmbedding, topK = 5, allowedContentIds = [], sessionId = null) {
     // Vectorize가 로컬에서 지원되지 않는 경우 빈 배열 반환
     if (!this.env.VECTORIZE?.query) {
       console.warn('Vectorize not available (local dev)');
@@ -129,7 +130,7 @@ export class ChatService {
       const searchTopK = allowedContentIds.length > 0 ? topK * 3 : topK;
 
       const results = await this.env.VECTORIZE.query(queryEmbedding, {
-        topK: searchTopK,
+        topK: searchTopK + 10, // 학습 목표/요약도 포함되므로 더 많이 검색
         returnMetadata: true,
         returnValues: false
       });
@@ -140,15 +141,28 @@ export class ChatService {
         match => match.score >= threshold
       );
 
-      // 콘텐츠 ID 필터링 (세션에 연결된 콘텐츠만)
-      if (allowedContentIds.length > 0) {
-        filtered = filtered.filter(
-          match => allowedContentIds.includes(match.metadata?.contentId)
-        );
+      // 학습 목표/요약과 콘텐츠 분리
+      const learningResults = [];
+      const contentResults = [];
+
+      for (const match of filtered) {
+        const type = match.metadata?.type;
+
+        // 학습 목표/요약은 해당 세션의 것만
+        if (type === 'learning_goal' || type === 'learning_summary') {
+          if (sessionId && match.metadata?.sessionId === sessionId) {
+            learningResults.push(match);
+          }
+        } else if (type === 'content') {
+          // 콘텐츠는 ID 필터링
+          if (allowedContentIds.length === 0 || allowedContentIds.includes(match.metadata?.contentId)) {
+            contentResults.push(match);
+          }
+        }
       }
 
-      // 최종 결과 수 제한
-      return filtered.slice(0, topK);
+      // 학습 목표/요약 우선 + 콘텐츠 결합
+      return [...learningResults, ...contentResults.slice(0, topK)];
     } catch (error) {
       console.error('Vector search error:', error);
       return [];
@@ -156,26 +170,51 @@ export class ChatService {
   }
 
   /**
-   * 검색 결과로 컨텍스트 구성
+   * 검색 결과로 컨텍스트 구성 (학습 목표/요약 + 콘텐츠)
    */
   async buildContext(searchResults) {
     const contextParts = [];
-    const chunkIds = searchResults.map(r => r.id);
+    const contentIds = [];
 
-    // D1에서 청크 내용 조회 (status = 1만)
-    if (chunkIds.length > 0) {
-      const placeholders = chunkIds.map(() => '?').join(',');
+    // 학습 목표/요약은 metadata.text에서 직접 추출, 콘텐츠는 ID 수집
+    for (const result of searchResults) {
+      const type = result.metadata?.type;
+
+      if (type === 'learning_goal') {
+        // 학습 목표는 컨텍스트 앞부분에 추가
+        const goalText = result.metadata?.text;
+        if (goalText) {
+          contextParts.unshift(`[학습 목표]\n${goalText}`);
+        }
+      } else if (type === 'learning_summary') {
+        // 학습 요약은 학습 목표 다음에 추가
+        const summaryText = result.metadata?.text;
+        if (summaryText) {
+          contextParts.push(`[학습 요약]\n${summaryText}`);
+        }
+      } else if (type === 'content') {
+        // 콘텐츠는 DB에서 조회
+        const contentId = result.metadata?.contentId;
+        if (contentId) {
+          contentIds.push(contentId);
+        }
+      }
+    }
+
+    // D1에서 콘텐츠 내용 조회 (status = 1만)
+    if (contentIds.length > 0) {
+      const placeholders = contentIds.map(() => '?').join(',');
       const { results } = await this.env.DB
-        .prepare(`SELECT id, content FROM TB_CHUNK WHERE id IN (${placeholders}) AND status = 1`)
-        .bind(...chunkIds)
+        .prepare(`SELECT id, content_nm, content FROM TB_CONTENT WHERE id IN (${placeholders}) AND status = 1`)
+        .bind(...contentIds)
         .all();
 
-      // 검색 결과 순서대로 정렬 (Vectorize ID는 문자열, D1 ID는 정수)
-      const chunkMap = new Map(results.map(r => [String(r.id), r.content]));
-      for (const result of searchResults) {
-        const content = chunkMap.get(result.id);
-        if (content) {
-          contextParts.push(content);
+      // 검색 결과 순서대로 정렬
+      const contentMap = new Map(results.map(r => [r.id, r]));
+      for (const contentId of contentIds) {
+        const content = contentMap.get(contentId);
+        if (content && content.content) {
+          contextParts.push(`[${content.content_nm}]\n${content.content}`);
         }
       }
     }
@@ -246,7 +285,7 @@ ${context}
    * 참조 문서 정보 포맷팅
    */
   formatSources(searchResults) {
-    // 문서별로 그룹화 (중복 제거)
+    // 콘텐츠별로 그룹화 (중복 제거)
     const contentMap = new Map();
 
     for (const result of searchResults) {
