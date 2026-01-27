@@ -106,17 +106,20 @@ sessions.get('/', async (c) => {
  * Body:
  * - user_id: 사용자 ID (선택)
  * - content_ids: 연결할 콘텐츠 ID 배열 (필수, 최소 1개)
+ * - settings: AI 설정 (선택) { persona, temperature, topP }
  */
 sessions.post('/', async (c) => {
   try {
     // 요청 본문 파싱
     let userId = null;
     let contentIds = [];
+    let settings = {};
 
     try {
       const body = await c.req.json();
       userId = body.user_id || null;
       contentIds = Array.isArray(body.content_ids) ? body.content_ids : [];
+      settings = body.settings || {};
     } catch {
       // JSON 파싱 실패
     }
@@ -152,7 +155,7 @@ sessions.post('/', async (c) => {
 
     // 학습 목표, 요약, 추천 질문 생성 및 Vectorize에 저장
     const learningService = new LearningService(c.env);
-    const learningData = await learningService.generateAndStoreLearningData(sessionId, contentIds);
+    const learningData = await learningService.generateAndStoreLearningData(sessionId, contentIds, settings);
 
     // 생성된 세션 조회 (학습 데이터 포함)
     const session = await c.env.DB

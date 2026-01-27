@@ -18,9 +18,10 @@ export class LearningService {
    * 세션에 대한 학습 메타데이터 생성 및 저장
    * @param {number} sessionId - 세션 ID
    * @param {number[]} contentIds - 콘텐츠 ID 배열
+   * @param {Object} settings - AI 설정 { persona, temperature, topP }
    * @returns {Promise<Object>} - 생성된 제목, 학습 목표, 요약, 추천 질문
    */
-  async generateAndStoreLearningData(sessionId, contentIds) {
+  async generateAndStoreLearningData(sessionId, contentIds, settings = {}) {
     // 콘텐츠에서 텍스트 및 제목 추출
     const { context, contentTitles } = await this.getContentContext(contentIds);
 
@@ -32,8 +33,8 @@ export class LearningService {
       return { sessionNm: defaultSessionNm, learningGoal: null, learningSummary: null, recommendedQuestions: null };
     }
 
-    // 제목, 학습 목표, 요약, 추천 질문 생성
-    const learningData = await this.generateLearningData(context, contentTitles);
+    // 제목, 학습 목표, 요약, 추천 질문 생성 (AI 설정 적용)
+    const learningData = await this.generateLearningData(context, contentTitles, settings);
 
     // DB에 저장
     await this.saveLearningDataToDB(sessionId, learningData);
@@ -68,9 +69,19 @@ export class LearningService {
 
   /**
    * 제목, 학습 목표, 요약, 추천 질문 생성
+   * @param {string} context - 학습 콘텐츠 텍스트
+   * @param {string[]} contentTitles - 콘텐츠 제목 배열
+   * @param {Object} settings - AI 설정 { persona, temperature, topP }
    */
-  async generateLearningData(context, contentTitles = []) {
-    const systemPrompt = `당신은 교육 전문가입니다. 주어진 학습 콘텐츠를 분석하여 세션 제목, 학습 목표, 요약, 추천 질문을 생성해 주세요.
+  async generateLearningData(context, contentTitles = [], settings = {}) {
+    // AI 설정에서 페르소나 가져오기
+    const persona = settings.persona || '당신은 친절하고 전문적인 AI 튜터입니다. 학생들이 이해하기 쉽게 설명하고, 질문에 정확하게 답변합니다.';
+    const temperature = settings.temperature ?? 0.7;
+    const topP = settings.topP ?? 0.9;
+
+    const systemPrompt = `${persona}
+
+당신은 교육 전문가로서 주어진 학습 콘텐츠를 분석하여 세션 제목, 학습 목표, 요약, 추천 질문을 생성해 주세요.
 
 반드시 아래 JSON 형식으로만 응답하세요:
 {
@@ -109,7 +120,8 @@ ${context}`;
             { role: 'user', content: userPrompt }
           ],
           max_tokens: 1024,
-          temperature: 0.7
+          temperature: temperature,
+          top_p: topP
         })
       });
 
