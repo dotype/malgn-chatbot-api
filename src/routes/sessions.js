@@ -280,6 +280,16 @@ sessions.get('/:id', async (c) => {
         : '새 대화';
     }
 
+    // 학습 요약 파싱 (배열 형태로 저장됨)
+    let learningSummary = null;
+    if (session.learning_summary) {
+      try {
+        learningSummary = JSON.parse(session.learning_summary);
+      } catch {
+        learningSummary = session.learning_summary; // 파싱 실패시 문자열 그대로
+      }
+    }
+
     // 추천 질문 파싱
     let recommendedQuestions = [];
     if (session.recommended_questions) {
@@ -307,7 +317,7 @@ sessions.get('/:id', async (c) => {
         },
         learning: {
           goal: session.learning_goal || null,
-          summary: session.learning_summary || null,
+          summary: learningSummary,
           recommendedQuestions: recommendedQuestions
         },
         contents: linkedContents || [],

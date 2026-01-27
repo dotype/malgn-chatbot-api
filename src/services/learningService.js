@@ -10,11 +10,8 @@ export class LearningService {
   constructor(env) {
     this.env = env;
     this.embeddingService = new EmbeddingService(env);
-    this.model = 'gpt-4o-mini';
-    // AI Gateway를 통해 OpenAI 호출 (지역 제한 우회)
-    this.apiUrl = env.AI_GATEWAY_URL
-      ? `${env.AI_GATEWAY_URL}/openai/v1/chat/completions`
-      : 'https://api.openai.com/v1/chat/completions';
+    // Workers AI 사용 (지역 제한 없음)
+    this.model = '@cf/meta/llama-3.1-8b-instruct';
   }
 
   /**
@@ -41,7 +38,7 @@ export class LearningService {
     }
 
     // 제목, 학습 목표, 요약, 추천 질문 생성 (AI 설정 적용)
-    console.log('[LearningService] Generating learning data with OpenAI...');
+    console.log('[LearningService] Generating learning data with Workers AI...');
     const learningData = await this.generateLearningData(context, contentTitles, settings);
     console.log('[LearningService] Generated learning data:', JSON.stringify(learningData, null, 2));
 
@@ -87,8 +84,16 @@ export class LearningService {
   async generateLearningData(context, contentTitles = [], settings = {}) {
     // AI 설정에서 페르소나 가져오기
     const persona = settings.persona || '당신은 친절하고 전문적인 AI 튜터입니다. 학생들이 이해하기 쉽게 설명하고, 질문에 정확하게 답변합니다.';
-    const temperature = settings.temperature ?? 0.7;
-    const topP = settings.topP ?? 0.9;
+    // 추천 질문 생성은 temperature 0.2로 고정 (매우 보수적)
+    const temperature = 0.2;
+    const topP = settings.topP ?? 0.3;
+    // 요약 개수와 추천 질문 개수 설정
+    const summaryCount = settings.summaryCount ?? 3;
+    const recommendCount = settings.recommendCount ?? 3;
+
+    // 요약 예시 생성 (개수에 맞춤)
+    const summaryExamples = Array.from({ length: summaryCount }, (_, i) => `요약 ${i + 1}`);
+    const questionExamples = Array.from({ length: recommendCount }, (_, i) => `추천 질문 ${i + 1}`);
 
     const systemPrompt = `${persona}
 
@@ -97,17 +102,42 @@ export class LearningService {
 반드시 아래 JSON 형식으로만 응답하세요:
 {
   "title": "학습 세션의 간결한 제목 (15자 이내, 핵심 주제 반영)",
-  "learningGoal": "이 콘텐츠를 통해 학습자가 달성할 수 있는 학습 목표 (2-3문장)",
-  "learningSummary": "콘텐츠의 핵심 내용 요약 (3-5문장)",
-  "recommendedQuestions": ["추천 질문 1", "추천 질문 2", "추천 질문 3", "추천 질문 4", "추천 질문 5"]
+  "learningGoal": "이 콘텐츠를 통해 학습자가 달성할 수 있는 학습 목표 (1-2문장)",
+  "learningSummary": ${JSON.stringify(summaryExamples)},
+  "recommendedQuestions": ${JSON.stringify(questionExamples)}
 }
+
+★★★ 매우 중요 - 개수 제한 ★★★
+- learningSummary: 정확히 ${summaryCount}개만 생성 (더 많거나 적으면 안됨)
+- recommendedQuestions: 정확히 ${recommendCount}개만 생성 (더 많거나 적으면 안됨)
 
 규칙:
 1. 제목은 학습 내용의 핵심 주제를 15자 이내로 간결하게 표현
-2. 학습 목표는 구체적이고 측정 가능하게 작성
-3. 요약은 핵심 개념을 포함
-4. 추천 질문은 학습자의 이해를 돕는 질문 5개
-5. 한국어로 작성`;
+2. 학습 목표는 구체적이고 측정 가능하게 1-2문장으로 작성
+3. 요약은 핵심 내용을 정확히 ${summaryCount}개의 단문으로 작성 (배열 형태)
+4. 추천 질문은 정확히 ${recommendCount}개만 생성
+5. 한국어로 작성
+
+★★★ 추천 질문 생성 - 매우 중요 ★★★
+
+[질문 형식 - 반드시 이 형식만 사용]
+- "~란/은/는 무엇인가요?"
+- "~의 특징은 무엇인가요?"
+- "~에는 어떤 것들이 있나요?"
+
+[좋은 질문 예시]
+- "맑은소프트란 무엇인가요?"
+- "LMS의 주요 기능은 무엇인가요?"
+- "제공하는 서비스에는 어떤 것들이 있나요?"
+
+[나쁜 질문 예시 - 절대 생성 금지]
+- "어떻게 관리하나요?" ← 금지 (방법 질문)
+- "어떻게 하는지 설명해 주세요" ← 금지 (설명 요청)
+- "왜 ~인가요?" ← 금지 (이유 질문)
+- "~의 장점은 무엇인가요?" ← 금지 (평가 질문)
+- "앞으로 어떻게 발전할까요?" ← 금지 (미래 예측)
+
+질문은 콘텐츠에 직접 답이 있는 단순한 사실 확인 질문만 생성하세요.`;
 
     const contentTitlesInfo = contentTitles.length > 0
       ? `\n\n학습 자료 제목: ${contentTitles.join(', ')}`
@@ -118,35 +148,25 @@ export class LearningService {
 ${context}`;
 
     try {
-      const response = await fetch(this.apiUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: this.model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ],
-          max_tokens: 1024,
-          temperature: temperature,
-          top_p: topP
-        })
+      // Workers AI 사용
+      const result = await this.env.AI.run(this.model, {
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        max_tokens: 1024,
+        temperature: temperature
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('[LearningService] OpenAI API failed:', response.status, errorText);
+      if (!result || !result.response) {
+        console.error('[LearningService] Workers AI failed: no response');
         const defaultSessionNm = contentTitles.length > 0
           ? contentTitles.slice(0, 2).join(', ') + (contentTitles.length > 2 ? ' 외' : '')
           : '새 대화';
         return { sessionNm: defaultSessionNm, learningGoal: null, learningSummary: null, recommendedQuestions: null };
       }
 
-      const result = await response.json();
-      const content = result.choices?.[0]?.message?.content || '{}';
+      const content = result.response || '{}';
 
       // JSON 파싱
       const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -157,11 +177,25 @@ ${context}`;
         ? contentTitles.slice(0, 2).join(', ') + (contentTitles.length > 2 ? ' 외' : '')
         : '새 대화';
 
+      // 배열 길이 검증 및 자르기 (설정된 개수만큼만 유지)
+      let learningSummary = data.learningSummary || null;
+      let recommendedQuestions = data.recommendedQuestions || null;
+
+      if (Array.isArray(learningSummary) && learningSummary.length > summaryCount) {
+        console.log(`[LearningService] Truncating summary from ${learningSummary.length} to ${summaryCount}`);
+        learningSummary = learningSummary.slice(0, summaryCount);
+      }
+
+      if (Array.isArray(recommendedQuestions) && recommendedQuestions.length > recommendCount) {
+        console.log(`[LearningService] Truncating questions from ${recommendedQuestions.length} to ${recommendCount}`);
+        recommendedQuestions = recommendedQuestions.slice(0, recommendCount);
+      }
+
       return {
         sessionNm: data.title || defaultSessionNm,
         learningGoal: data.learningGoal || null,
-        learningSummary: data.learningSummary || null,
-        recommendedQuestions: data.recommendedQuestions || null
+        learningSummary: learningSummary,
+        recommendedQuestions: recommendedQuestions
       };
     } catch (error) {
       console.error('Learning data generation error:', error);
@@ -191,7 +225,7 @@ ${context}`;
       .bind(
         sessionNm,
         learningGoal,
-        learningSummary,
+        learningSummary ? JSON.stringify(learningSummary) : null,
         recommendedQuestions ? JSON.stringify(recommendedQuestions) : null,
         sessionId
       )

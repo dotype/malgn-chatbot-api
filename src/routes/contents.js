@@ -365,6 +365,32 @@ contents.put('/:id', async (c) => {
 });
 
 /**
+ * POST /contents/reembed
+ * 모든 콘텐츠 재임베딩 (Vectorize 인덱스 재생성 후 사용)
+ */
+contents.post('/reembed', async (c) => {
+  try {
+    const contentService = new ContentService(c.env);
+    const result = await contentService.reembedAllContents();
+
+    return c.json({
+      success: true,
+      data: result
+    });
+
+  } catch (error) {
+    console.error('Reembed contents error:', error);
+    return c.json({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: '콘텐츠 재임베딩 중 오류가 발생했습니다.'
+      }
+    }, 500);
+  }
+});
+
+/**
  * DELETE /contents/:id
  * 콘텐츠 삭제
  */

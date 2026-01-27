@@ -13,16 +13,13 @@ export class ChatService {
   constructor(env) {
     this.env = env;
     this.embeddingService = new EmbeddingService(env);
-    this.llmModel = 'gpt-4o-mini';
-    // AI Gateway를 통해 OpenAI 호출 (지역 제한 우회)
-    this.apiUrl = env.AI_GATEWAY_URL
-      ? `${env.AI_GATEWAY_URL}/openai/v1/chat/completions`
-      : 'https://api.openai.com/v1/chat/completions';
+    // Workers AI 사용 (지역 제한 없음)
+    this.llmModel = '@cf/meta/llama-3.1-8b-instruct';
 
     // 기본 AI 설정
     this.persona = '당신은 친절하고 전문적인 AI 튜터입니다.';
-    this.temperature = 0.7;
-    this.topP = 0.9;
+    this.temperature = 0.3;  // 기본값 0.3 (보수적)
+    this.topP = 0.3;         // 기본값 0.3 (보수적)
     this.maxTokens = 1024;
   }
 
@@ -112,6 +109,11 @@ export class ChatService {
 
     // 6. 참조 문서 정보 구성
     const sources = this.formatSources(searchResults);
+
+    // 7. 메시지를 DB에 저장 (사용자 메시지 + AI 응답)
+    if (currentSessionId) {
+      await this.saveMessagesToDB(currentSessionId, message, response);
+    }
 
     return {
       response,
@@ -287,7 +289,7 @@ export class ChatService {
   }
 
   /**
-   * LLM으로 응답 생성 (OpenAI API 사용)
+   * LLM으로 응답 생성 (Workers AI 사용)
    */
   async generateResponse(question, context) {
     const systemPrompt = `${this.persona}
@@ -309,34 +311,18 @@ ${context}
 위 문서를 참고하여 질문에 답변해 주세요.`;
 
     try {
-      const response = await fetch(this.apiUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: this.llmModel,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ],
-          max_tokens: this.maxTokens,
-          temperature: this.temperature,
-          top_p: this.topP
-        })
+      // Workers AI 사용
+      const result = await this.env.AI.run(this.llmModel, {
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        max_tokens: this.maxTokens,
+        temperature: this.temperature
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('[ChatService] OpenAI API error:', response.status, errorText);
-        throw new Error(`OpenAI API 오류: ${response.status}`);
-      }
-
-      const result = await response.json();
-
-      if (result.choices && result.choices.length > 0) {
-        return result.choices[0].message.content;
+      if (result && result.response) {
+        return result.response;
       }
 
       return '응답을 생성할 수 없습니다.';
@@ -367,6 +353,36 @@ ${context}
     }
 
     return Array.from(contentMap.values());
+  }
+
+  /**
+   * 메시지를 DB에 저장 (사용자 메시지 + AI 응답)
+   */
+  async saveMessagesToDB(sessionId, userMessage, assistantResponse) {
+    try {
+      // 사용자 메시지 저장
+      await this.env.DB
+        .prepare('INSERT INTO TB_MESSAGE (session_id, role, content) VALUES (?, ?, ?)')
+        .bind(sessionId, 'user', userMessage)
+        .run();
+
+      // AI 응답 저장
+      await this.env.DB
+        .prepare('INSERT INTO TB_MESSAGE (session_id, role, content) VALUES (?, ?, ?)')
+        .bind(sessionId, 'assistant', assistantResponse)
+        .run();
+
+      // 세션 updated_at 갱신
+      await this.env.DB
+        .prepare('UPDATE TB_SESSION SET updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .bind(sessionId)
+        .run();
+
+      console.log(`[ChatService] Messages saved to DB for session ${sessionId}`);
+    } catch (error) {
+      console.error('Save messages to DB error:', error);
+      // 메시지 저장 실패해도 응답은 반환 (에러를 throw하지 않음)
+    }
   }
 
   /**

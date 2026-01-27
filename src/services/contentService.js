@@ -459,6 +459,47 @@ export class ContentService {
   }
 
   /**
+   * 모든 콘텐츠 재임베딩
+   */
+  async reembedAllContents() {
+    // 모든 활성 콘텐츠 조회
+    const { results } = await this.env.DB
+      .prepare('SELECT id, content_nm, content FROM TB_CONTENT WHERE status = 1')
+      .all();
+
+    if (!results || results.length === 0) {
+      return { success: true, count: 0, message: '재임베딩할 콘텐츠가 없습니다.' };
+    }
+
+    let successCount = 0;
+    let errorCount = 0;
+    const errors = [];
+
+    for (const content of results) {
+      try {
+        if (content.content && content.content.trim().length > 0) {
+          await this.storeContentEmbedding(content.id, content.content_nm, content.content);
+          successCount++;
+          console.log(`[Reembed] Content ${content.id} (${content.content_nm}) embedded successfully`);
+        }
+      } catch (error) {
+        errorCount++;
+        errors.push({ id: content.id, title: content.content_nm, error: error.message });
+        console.error(`[Reembed] Content ${content.id} failed:`, error.message);
+      }
+    }
+
+    return {
+      success: true,
+      total: results.length,
+      successCount,
+      errorCount,
+      errors: errors.length > 0 ? errors : undefined,
+      message: `${successCount}개 콘텐츠 재임베딩 완료${errorCount > 0 ? `, ${errorCount}개 실패` : ''}`
+    };
+  }
+
+  /**
    * 파일 확장자 추출
    */
   getFileType(filename) {
@@ -487,31 +528,144 @@ export class ContentService {
   }
 
   /**
-   * PDF에서 텍스트 추출
-   * - 프로덕션: unpdf 라이브러리 사용
-   * - 로컬: 기본 텍스트 추출 (제한적)
+   * 추출된 텍스트가 PDF 구조 데이터인지 검증
+   * PDF 바이너리/메타데이터가 아닌 실제 텍스트인지 확인
    */
-  async extractPdfText(buffer) {
-    try {
-      // 프로덕션 환경에서는 unpdf 사용 시도
-      if (this.env.ENVIRONMENT !== 'development') {
-        try {
-          const { extractText } = await import('unpdf');
-          const { text } = await extractText(new Uint8Array(buffer));
-          if (text && text.trim().length > 0) {
-            return text;
-          }
-        } catch (e) {
-          console.warn('unpdf failed, falling back to basic extraction:', e.message);
+  validateExtractedText(text) {
+    if (!text || text.trim().length === 0) {
+      console.warn('[ContentService] Validation failed: empty text');
+      return false;
+    }
+
+    // 최소 길이 체크 (100자 이상)
+    if (text.trim().length < 100) {
+      console.warn('[ContentService] Validation failed: too short', text.trim().length);
+      return false;
+    }
+
+    const sample = text.substring(0, 500);
+    console.log('[ContentService] Validating text sample:', sample.substring(0, 100));
+
+    // PDF 구조 패턴 감지 (이 패턴이 있으면 실제 텍스트가 아님)
+    const pdfStructurePatterns = [
+      /^%\s*%/,                          // PDF 헤더
+      /^%PDF/,                           // PDF 파일 시작
+      /<</,                              // PDF 딕셔너리 시작
+      /\/Type\s*\/\w+/,                  // PDF 타입 정의
+      /\/Catalog|\/Pages|\/Metadata/,   // PDF 카탈로그
+      /\d+\s+\d+\s+obj/,                 // PDF 오브젝트
+      /\/Filter\s*\/FlateDecode/,        // PDF 필터
+      /\/Length\s+\d+/,                  // PDF 길이
+      /\/Subtype\s*\/XML/                // PDF 서브타입
+    ];
+
+    // PDF 구조 패턴이 3개 이상 발견되면 실패 (완화)
+    let matchCount = 0;
+    for (const pattern of pdfStructurePatterns) {
+      if (pattern.test(sample)) {
+        matchCount++;
+        if (matchCount >= 3) {
+          console.warn('[ContentService] PDF structure data detected, matchCount:', matchCount);
+          return false;
         }
       }
-
-      // 기본 PDF 텍스트 추출 (로컬 개발용)
-      return this.extractPdfTextBasic(buffer);
-    } catch (error) {
-      console.error('PDF extraction error:', error);
-      throw new Error('PDF에서 텍스트를 추출할 수 없습니다. TXT 또는 MD 파일을 사용해 주세요.');
     }
+
+    // 의미있는 텍스트 비율 확인 (한글, 영문, 숫자 포함)
+    const meaningfulChars = (text.match(/[가-힣a-zA-Z0-9]/g) || []).length;
+    const ratio = meaningfulChars / text.length;
+    console.log('[ContentService] Meaningful text ratio:', ratio.toFixed(2));
+
+    // 15%로 완화 (숫자가 많은 문서 허용)
+    if (ratio < 0.15) {
+      console.warn('[ContentService] Low meaningful text ratio:', ratio.toFixed(2));
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * PDF에서 텍스트 추출
+   * - 1차: Cloudflare Workers AI toMarkdown() (가장 안정적)
+   * - 2차: unpdf 라이브러리 사용
+   * - 3차: 기본 텍스트 추출 (제한적)
+   */
+  async extractPdfText(buffer) {
+    const errors = [];
+    console.log('[ContentService] Starting PDF extraction, buffer size:', buffer.byteLength);
+
+    // 1차: Cloudflare Workers AI toMarkdown() 시도 (가장 안정적)
+    if (this.env.AI?.toMarkdown) {
+      try {
+        console.log('[ContentService] Trying Cloudflare AI toMarkdown...');
+        const result = await this.env.AI.toMarkdown({
+          name: 'document.pdf',
+          blob: new Blob([buffer], { type: 'application/pdf' })
+        });
+
+        console.log('[ContentService] AI toMarkdown result:', result.format, result.data?.length || 0);
+
+        if (result.format === 'markdown' && result.data) {
+          // Markdown에서 텍스트 추출 (헤더, 리스트 등 마크다운 문법 제거)
+          const text = result.data
+            .replace(/^#+\s*/gm, '')        // 헤더 제거
+            .replace(/^\s*[-*+]\s*/gm, '')   // 리스트 마커 제거
+            .replace(/\*\*|__/g, '')         // 볼드 제거
+            .replace(/\*|_/g, '')            // 이탤릭 제거
+            .replace(/`/g, '')               // 코드 마커 제거
+            .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')  // 링크에서 텍스트만 추출
+            .trim();
+
+          if (text && this.validateExtractedText(text)) {
+            console.log('[ContentService] PDF text extracted with AI toMarkdown, length:', text.length);
+            return text;
+          }
+        }
+        errors.push(`AI toMarkdown: ${result.error || '유효한 텍스트 없음'}`);
+      } catch (e) {
+        console.error('[ContentService] AI toMarkdown failed:', e.message);
+        errors.push(`AI toMarkdown: ${e.message}`);
+      }
+    } else {
+      console.log('[ContentService] AI toMarkdown not available');
+      errors.push('AI toMarkdown: not available');
+    }
+
+    // 2차: unpdf 시도
+    try {
+      console.log('[ContentService] Trying unpdf...');
+      const { extractText } = await import('unpdf');
+      const { text } = await extractText(new Uint8Array(buffer));
+      console.log('[ContentService] unpdf result length:', text?.length || 0);
+      if (text && this.validateExtractedText(text)) {
+        console.log('[ContentService] PDF text extracted with unpdf, length:', text.length);
+        return text;
+      }
+      errors.push('unpdf: 유효한 텍스트 없음');
+    } catch (e) {
+      console.error('[ContentService] unpdf failed:', e.message);
+      errors.push(`unpdf: ${e.message}`);
+    }
+
+    // 3차: 기본 추출 시도
+    try {
+      console.log('[ContentService] Trying basic extraction...');
+      const basicText = this.extractPdfTextBasic(buffer);
+      console.log('[ContentService] basic result length:', basicText?.length || 0);
+      if (this.validateExtractedText(basicText)) {
+        console.log('[ContentService] PDF text extracted with basic method, length:', basicText.length);
+        return basicText;
+      }
+      errors.push('basic: 유효한 텍스트 없음');
+    } catch (e) {
+      console.error('[ContentService] basic extraction failed:', e.message);
+      errors.push(`basic: ${e.message}`);
+    }
+
+    // 모든 방법 실패
+    console.error('[ContentService] All PDF extraction methods failed:', errors.join(', '));
+    throw new Error('PDF에서 텍스트를 추출할 수 없습니다. 텍스트가 포함된 PDF이거나 TXT, MD 파일을 사용해 주세요.');
   }
 
   /**
