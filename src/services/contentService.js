@@ -7,7 +7,6 @@
  * - Vectorize에 임베딩 저장
  */
 import { EmbeddingService } from './embeddingService.js';
-import { extractText as extractPdfTextFromBuffer } from 'unpdf';
 
 export class ContentService {
   constructor(env) {
@@ -139,8 +138,19 @@ export class ContentService {
       }
 
       const contentType = response.headers.get('content-type') || '';
+      const urlLower = url.toLowerCase();
 
-      if (contentType.includes('text/html')) {
+      // 자막 파일 확인 (URL 확장자 또는 content-type)
+      const isSubtitle = urlLower.endsWith('.srt') ||
+                         urlLower.endsWith('.vtt') ||
+                         contentType.includes('text/vtt') ||
+                         contentType.includes('application/x-subrip');
+
+      if (isSubtitle) {
+        // 자막 파일에서 텍스트 추출
+        const subtitleText = await response.text();
+        content = this.extractTextFromSubtitle(subtitleText);
+      } else if (contentType.includes('text/html')) {
         // HTML에서 텍스트 추출
         const html = await response.text();
         content = this.extractTextFromHtml(html);
@@ -211,6 +221,67 @@ export class ContentService {
     text = text.replace(/\s+/g, ' ').trim();
 
     return text;
+  }
+
+  /**
+   * 자막 파일에서 텍스트 추출 (SRT, VTT 지원)
+   */
+  extractTextFromSubtitle(subtitleText) {
+    const lines = subtitleText.split('\n');
+    const textLines = [];
+
+    // VTT 헤더 제거
+    let startIndex = 0;
+    if (lines[0]?.trim().startsWith('WEBVTT')) {
+      startIndex = 1;
+      // 헤더 메타데이터 스킵
+      while (startIndex < lines.length && lines[startIndex].trim() !== '') {
+        startIndex++;
+      }
+    }
+
+    // 타임스탬프 패턴 (다양한 형식 지원)
+    // 00:00:00,000 --> 00:00:00,000 (SRT)
+    // 00:00:00.000 --> 00:00:00.000 (VTT with hours)
+    // 00:00.000 --> 00:00.000 (VTT without hours)
+    const timestampRegex = /^(\d{1,2}:)?\d{2}:\d{2}[,\.]\d{3}\s*-->\s*(\d{1,2}:)?\d{2}:\d{2}[,\.]\d{3}/;
+
+    for (let i = startIndex; i < lines.length; i++) {
+      const line = lines[i].trim();
+
+      // 빈 줄 스킵
+      if (!line) continue;
+
+      // 자막 번호 스킵 (SRT 형식: 숫자만 있는 줄)
+      if (/^\d+$/.test(line)) continue;
+
+      // 타임스탬프 줄 스킵
+      if (timestampRegex.test(line)) continue;
+
+      // VTT 큐 ID 스킵 (숫자 또는 문자로 시작하고 타임스탬프가 아닌 경우)
+      // 예: "1", "cue-1", etc. - 다음 줄이 타임스탬프인지 확인
+      if (/^[\w-]+$/.test(line) && i + 1 < lines.length && timestampRegex.test(lines[i + 1]?.trim())) {
+        continue;
+      }
+
+      // VTT 큐 설정 스킵 (align:, position: 등)
+      if (/^(align|position|line|size|vertical):/.test(line)) continue;
+
+      // NOTE, STYLE, REGION 블록 스킵 (VTT)
+      if (/^(NOTE|STYLE|REGION)/.test(line)) continue;
+
+      // HTML 태그 제거 (<b>, <i>, <u>, <font> 등)
+      let cleanLine = line
+        .replace(/<[^>]+>/g, '')
+        .replace(/\{[^}]+\}/g, ''); // SSA/ASS 스타일 태그 제거
+
+      if (cleanLine.trim()) {
+        textLines.push(cleanLine.trim());
+      }
+    }
+
+    // 중복 제거 없이 모든 줄 유지
+    return textLines.join('\n');
   }
 
   /**
@@ -416,20 +487,117 @@ export class ContentService {
   }
 
   /**
-   * PDF에서 텍스트 추출 (unpdf 라이브러리 사용)
+   * PDF에서 텍스트 추출
+   * - 프로덕션: unpdf 라이브러리 사용
+   * - 로컬: 기본 텍스트 추출 (제한적)
    */
   async extractPdfText(buffer) {
     try {
-      const { text } = await extractPdfTextFromBuffer(new Uint8Array(buffer));
-
-      if (!text || text.trim().length === 0) {
-        throw new Error('PDF에서 텍스트를 추출할 수 없습니다.');
+      // 프로덕션 환경에서는 unpdf 사용 시도
+      if (this.env.ENVIRONMENT !== 'development') {
+        try {
+          const { extractText } = await import('unpdf');
+          const { text } = await extractText(new Uint8Array(buffer));
+          if (text && text.trim().length > 0) {
+            return text;
+          }
+        } catch (e) {
+          console.warn('unpdf failed, falling back to basic extraction:', e.message);
+        }
       }
 
-      return text;
+      // 기본 PDF 텍스트 추출 (로컬 개발용)
+      return this.extractPdfTextBasic(buffer);
     } catch (error) {
       console.error('PDF extraction error:', error);
       throw new Error('PDF에서 텍스트를 추출할 수 없습니다. TXT 또는 MD 파일을 사용해 주세요.');
     }
+  }
+
+  /**
+   * 기본 PDF 텍스트 추출 (간단한 PDF용)
+   */
+  extractPdfTextBasic(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+
+    // 여러 방법으로 텍스트 추출 시도
+    const textParts = [];
+
+    // 방법 1: BT...ET 블록에서 텍스트 추출
+    const streamRegex = /stream\s*([\s\S]*?)\s*endstream/g;
+    let match;
+
+    while ((match = streamRegex.exec(text)) !== null) {
+      const streamContent = match[1];
+
+      // Tj, TJ 연산자에서 텍스트 추출
+      const tjRegex = /\(([^)]*)\)\s*Tj/g;
+      let tjMatch;
+      while ((tjMatch = tjRegex.exec(streamContent)) !== null) {
+        const extracted = tjMatch[1]
+          .replace(/\\n/g, '\n')
+          .replace(/\\r/g, '')
+          .replace(/\\\(/g, '(')
+          .replace(/\\\)/g, ')')
+          .replace(/\\\\/g, '\\');
+        if (extracted.trim()) {
+          textParts.push(extracted);
+        }
+      }
+
+      // TJ 배열에서 텍스트 추출
+      const tjArrayRegex = /\[((?:\([^)]*\)|[^\]])*)\]\s*TJ/gi;
+      let tjArrayMatch;
+      while ((tjArrayMatch = tjArrayRegex.exec(streamContent)) !== null) {
+        const arrayContent = tjArrayMatch[1];
+        const stringRegex = /\(([^)]*)\)/g;
+        let strMatch;
+        while ((strMatch = stringRegex.exec(arrayContent)) !== null) {
+          const extracted = strMatch[1]
+            .replace(/\\n/g, '\n')
+            .replace(/\\r/g, '')
+            .replace(/\\\(/g, '(')
+            .replace(/\\\)/g, ')')
+            .replace(/\\\\/g, '\\');
+          if (extracted.trim()) {
+            textParts.push(extracted);
+          }
+        }
+      }
+    }
+
+    // 추출된 텍스트가 있으면 반환
+    if (textParts.length > 0) {
+      const result = textParts.join(' ').replace(/\s+/g, ' ').trim();
+      if (result.length > 50) {
+        return result;
+      }
+    }
+
+    // 방법 2: 읽을 수 있는 텍스트 패턴 찾기
+    const readableText = text
+      .replace(/[^\x20-\x7E\xA0-\xFF가-힣ㄱ-ㅎㅏ-ㅣ\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    // 의미있는 텍스트가 있는지 확인 (최소 100자)
+    if (readableText.length > 100) {
+      // PDF 메타데이터 등 제거
+      const cleanText = readableText
+        .replace(/PDF-\d+\.\d+/g, '')
+        .replace(/%[A-Za-z]+/g, '')
+        .replace(/\d+\s+\d+\s+obj/g, '')
+        .replace(/endobj/g, '')
+        .replace(/stream|endstream/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      if (cleanText.length > 100) {
+        return cleanText;
+      }
+    }
+
+    throw new Error('PDF에서 텍스트를 추출할 수 없습니다.');
   }
 }
