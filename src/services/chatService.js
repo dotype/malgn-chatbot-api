@@ -189,51 +189,30 @@ export class ChatService {
   }
 
   /**
-   * 검색 결과로 컨텍스트 구성 (학습 목표/요약 + 콘텐츠)
+   * 검색 결과로 컨텍스트 구성 (학습 목표/요약 + 청크 텍스트)
    */
   async buildContext(searchResults) {
     const contextParts = [];
-    const contentIds = [];
 
-    // 학습 목표/요약은 metadata.text에서 직접 추출, 콘텐츠는 ID 수집
     for (const result of searchResults) {
       const type = result.metadata?.type;
 
       if (type === 'learning_goal') {
-        // 학습 목표는 컨텍스트 앞부분에 추가
         const goalText = result.metadata?.text;
         if (goalText) {
           contextParts.unshift(`[학습 목표]\n${goalText}`);
         }
       } else if (type === 'learning_summary') {
-        // 학습 요약은 학습 목표 다음에 추가
         const summaryText = result.metadata?.text;
         if (summaryText) {
           contextParts.push(`[학습 요약]\n${summaryText}`);
         }
       } else if (type === 'content') {
-        // 콘텐츠는 DB에서 조회
-        const contentId = result.metadata?.contentId;
-        if (contentId) {
-          contentIds.push(contentId);
-        }
-      }
-    }
-
-    // D1에서 콘텐츠 내용 조회 (status = 1만)
-    if (contentIds.length > 0) {
-      const placeholders = contentIds.map(() => '?').join(',');
-      const { results } = await this.env.DB
-        .prepare(`SELECT id, content_nm, content FROM TB_CONTENT WHERE id IN (${placeholders}) AND status = 1`)
-        .bind(...contentIds)
-        .all();
-
-      // 검색 결과 순서대로 정렬
-      const contentMap = new Map(results.map(r => [r.id, r]));
-      for (const contentId of contentIds) {
-        const content = contentMap.get(contentId);
-        if (content && content.content) {
-          contextParts.push(`[${content.content_nm}]\n${content.content}`);
+        // 청크 텍스트를 metadata에서 직접 사용 (DB 조회 불필요)
+        const chunkText = result.metadata?.text;
+        const contentTitle = result.metadata?.contentTitle || '문서';
+        if (chunkText) {
+          contextParts.push(`[${contentTitle}]\n${chunkText}`);
         }
       }
     }
@@ -263,7 +242,7 @@ export class ChatService {
         contextParts.push(`[학습 요약]\n${session.learning_summary}`);
       }
 
-      // 연결된 콘텐츠 조회
+      // 연결된 콘텐츠 조회 (fallback이므로 앞부분 2000자만 사용)
       if (contentIds && contentIds.length > 0) {
         const placeholders = contentIds.map(() => '?').join(',');
         const { results } = await this.env.DB
@@ -273,7 +252,10 @@ export class ChatService {
 
         for (const content of (results || [])) {
           if (content.content) {
-            contextParts.push(`[${content.content_nm}]\n${content.content}`);
+            const truncated = content.content.length > 2000
+              ? content.content.substring(0, 2000) + '...'
+              : content.content;
+            contextParts.push(`[${content.content_nm}]\n${truncated}`);
           }
         }
       }

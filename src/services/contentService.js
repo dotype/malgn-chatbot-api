@@ -480,7 +480,7 @@ export class ContentService {
   }
 
   /**
-   * 콘텐츠 임베딩 생성 및 Vectorize 저장
+   * 콘텐츠 임베딩 생성 및 Vectorize 저장 (청크 기반)
    */
   async storeContentEmbedding(contentId, contentTitle, contentText) {
     // Vectorize가 없으면 스킵 (로컬 개발 환경)
@@ -490,23 +490,54 @@ export class ContentService {
     }
 
     try {
-      // 전체 콘텐츠 임베딩 생성
-      const embedding = await this.embeddingService.embed(contentText);
+      // 텍스트를 청크로 분할
+      const chunks = this.embeddingService.splitIntoChunks(contentText);
+      console.log(`[ContentService] Splitting content ${contentId} into ${chunks.length} chunks`);
 
-      // Vectorize에 저장
-      await this.env.VECTORIZE.insert([{
-        id: `content-${contentId}`,
-        values: embedding,
-        metadata: {
-          type: 'content',
-          contentId: contentId,
-          contentTitle: contentTitle
-        }
-      }]);
+      // 각 청크를 개별 임베딩 → Vectorize에 저장
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        const embedding = await this.embeddingService.embed(chunk.text);
 
-      console.log(`Stored embedding for content ${contentId}`);
+        await this.env.VECTORIZE.insert([{
+          id: `content-${contentId}-chunk-${i}`,
+          values: embedding,
+          metadata: {
+            type: 'content',
+            contentId: contentId,
+            contentTitle: contentTitle,
+            chunkIndex: i,
+            chunkCount: chunks.length,
+            text: chunk.text
+          }
+        }]);
+      }
+
+      console.log(`Stored ${chunks.length} chunk embeddings for content ${contentId}`);
     } catch (error) {
       console.error('Embedding storage error:', error);
+    }
+  }
+
+  /**
+   * 콘텐츠의 모든 청크 벡터 삭제
+   */
+  async deleteContentChunks(contentId) {
+    if (!this.env.VECTORIZE?.deleteByIds) return;
+
+    try {
+      // 기존 단일 벡터 ID도 삭제 (마이그레이션 호환)
+      const ids = [`content-${contentId}`];
+
+      // 청크 ID 삭제 (최대 100개 청크까지 지원)
+      for (let i = 0; i < 100; i++) {
+        ids.push(`content-${contentId}-chunk-${i}`);
+      }
+
+      await this.env.VECTORIZE.deleteByIds(ids);
+      console.log(`[ContentService] Deleted chunk vectors for content ${contentId}`);
+    } catch (error) {
+      console.warn('Vectorize chunk delete error:', error.message);
     }
   }
 
@@ -535,14 +566,8 @@ export class ContentService {
       const contentText = newContent.trim();
       const contentSize = new TextEncoder().encode(contentText).length;
 
-      // Vectorize에서 기존 벡터 삭제
-      if (this.env.VECTORIZE?.deleteByIds) {
-        try {
-          await this.env.VECTORIZE.deleteByIds([`content-${id}`]);
-        } catch (error) {
-          console.warn('Vectorize delete skipped (local dev):', error.message);
-        }
-      }
+      // Vectorize에서 기존 청크 벡터 삭제
+      await this.deleteContentChunks(id);
 
       // 콘텐츠 업데이트
       await this.env.DB
@@ -582,14 +607,8 @@ export class ContentService {
       return false;
     }
 
-    // Vectorize에서 벡터 삭제
-    if (this.env.VECTORIZE?.deleteByIds) {
-      try {
-        await this.env.VECTORIZE.deleteByIds([`content-${id}`]);
-      } catch (error) {
-        console.warn('Vectorize delete skipped (local dev):', error.message);
-      }
-    }
+    // Vectorize에서 청크 벡터 삭제
+    await this.deleteContentChunks(id);
 
     // 콘텐츠 soft delete (status = -1)
     await this.env.DB
@@ -620,6 +639,8 @@ export class ContentService {
     for (const content of results) {
       try {
         if (content.content && content.content.trim().length > 0) {
+          // 기존 벡터 삭제 후 청크 기반으로 재임베딩
+          await this.deleteContentChunks(content.id);
           await this.storeContentEmbedding(content.id, content.content_nm, content.content);
           successCount++;
           console.log(`[Reembed] Content ${content.id} (${content.content_nm}) embedded successfully`);
