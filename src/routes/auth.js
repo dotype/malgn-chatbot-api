@@ -12,47 +12,52 @@ auth.post('/login', async (c) => {
     const body = await c.req.json();
     const { username, password } = body;
 
-    // Validate input
     if (!username || !password) {
       return c.json({
-        error: 'Validation Error',
-        message: 'Username and password are required'
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: '사용자명과 비밀번호를 입력해 주세요.'
+        }
       }, 400);
     }
 
-    // Create service instance
     const authService = new AuthService(c.env);
-
-    // Authenticate user
     const user = await authService.authenticateUser(username, password);
 
     if (!user) {
       return c.json({
-        error: 'Authentication Failed',
-        message: 'Invalid username or password'
+        success: false,
+        error: {
+          code: 'AUTH_FAILED',
+          message: '사용자명 또는 비밀번호가 올바르지 않습니다.'
+        }
       }, 401);
     }
 
-    // Generate JWT token
     const token = await authService.generateToken(user);
 
     return c.json({
-      message: 'Login successful',
-      token: token,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        role: user.role
-      },
-      expiresIn: '24h'
+      success: true,
+      data: {
+        token,
+        user: {
+          id: user.id,
+          username: user.username,
+          role: user.role
+        },
+        expiresIn: '24h'
+      }
     });
 
   } catch (error) {
     console.error('Login error:', error);
     return c.json({
-      error: 'Server Error',
-      message: error.message || 'An error occurred during login'
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error.message || '로그인 중 오류가 발생했습니다.'
+      }
     }, 500);
   }
 });

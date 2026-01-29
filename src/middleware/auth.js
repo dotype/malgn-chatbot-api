@@ -8,25 +8,31 @@ export const authMiddleware = async (c, next) => {
   const authHeader = c.req.header('Authorization');
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    const error = new Error('Missing or invalid authorization header');
-    error.name = 'UnauthorizedError';
-    throw error;
+    return c.json({
+      success: false,
+      error: {
+        code: 'UNAUTHORIZED',
+        message: '인증이 필요합니다.'
+      }
+    }, 401);
   }
 
   const token = authHeader.substring(7);
 
   try {
-    // Get JWT secret from environment variables
     const secret = c.env.JWT_SECRET;
 
     if (!secret) {
       console.error('JWT_SECRET is not configured');
-      const error = new Error('Authentication configuration error');
-      error.name = 'UnauthorizedError';
-      throw error;
+      return c.json({
+        success: false,
+        error: {
+          code: 'UNAUTHORIZED',
+          message: '인증 설정 오류가 발생했습니다.'
+        }
+      }, 401);
     }
 
-    // Verify JWT token
     const encoder = new TextEncoder();
     const { payload } = await jwtVerify(token, encoder.encode(secret), {
       algorithms: ['HS256']
@@ -41,8 +47,12 @@ export const authMiddleware = async (c, next) => {
     await next();
   } catch (err) {
     console.error('JWT verification failed:', err.message);
-    const error = new Error('Invalid or expired token');
-    error.name = 'UnauthorizedError';
-    throw error;
+    return c.json({
+      success: false,
+      error: {
+        code: 'UNAUTHORIZED',
+        message: '유효하지 않거나 만료된 토큰입니다.'
+      }
+    }, 401);
   }
 };

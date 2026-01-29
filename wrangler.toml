@@ -7,20 +7,6 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 ENVIRONMENT = "development"
 
-# ============================================
-# AI Gateway 설정 (OpenAI 지역 제한 우회)
-# ============================================
-# OpenAI API가 특정 지역에서 차단될 수 있습니다.
-# AI Gateway를 통해 호출하면 이 문제를 해결할 수 있습니다.
-#
-# 설정 방법:
-# 1. Cloudflare 대시보드 접속
-# 2. AI > AI Gateway 메뉴에서 'malgn-chatbot' 게이트웨이 확인
-# 3. API Endpoints 섹션에서 Universal Endpoint URL 복사
-# 4. 아래 변수를 활성화하고 URL 설정
-#
-# AI_GATEWAY_URL = "https://gateway.ai.cloudflare.com/v1/{account_id}/malgn-chatbot"
-
 # Development environment
 [env.dev]
 name = "malgn-chatbot-api-dev"
@@ -35,17 +21,15 @@ vars = { ENVIRONMENT = "production" }
 # Cloudflare Bindings Configuration
 # ============================================
 
-# Workers AI (LLM and Embeddings) with AI Gateway
-# AI Gateway provides logging, caching, and rate limiting
+# Workers AI (Embeddings)
+# 사용 모델: @cf/baai/bge-base-en-v1.5 (768 dimensions)
+# 지역 제한 없이 안정적으로 동작
 [ai]
 binding = "AI"
 
-[[ai.gateway]]
-id = "malgn-chatbot"
-
 # Vectorize (Vector Database for RAG)
-# OpenAI text-embedding-3-small uses 1536 dimensions
-# Create with: wrangler vectorize create malgn-chatbot-vectors --dimensions=1536 --metric=cosine
+# Workers AI bge-base-en-v1.5 uses 768 dimensions
+# Create with: wrangler vectorize create malgn-chatbot-vectors --dimensions=768 --metric=cosine
 [[vectorize]]
 binding = "VECTORIZE"
 index_name = "malgn-chatbot-vectors"
@@ -88,8 +72,8 @@ bucket_name = "malgn-chatbot-files"
 #    wrangler d1 create malgn-chatbot-db
 #    -> Copy the database_id to this file
 #
-# 2. Create Vectorize index (1536 dimensions for OpenAI text-embedding-3-small):
-#    wrangler vectorize create malgn-chatbot-vectors --dimensions=1536 --metric=cosine
+# 2. Create Vectorize index (768 dimensions for Workers AI bge-base-en-v1.5):
+#    wrangler vectorize create malgn-chatbot-vectors --dimensions=768 --metric=cosine
 #
 # 3. Create KV namespace:
 #    wrangler kv namespace create "malgn-chatbot-kv"

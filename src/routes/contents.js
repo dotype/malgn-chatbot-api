@@ -62,7 +62,7 @@ contents.get('/', async (c) => {
 contents.post('/', async (c) => {
   try {
     const contentType = c.req.header('content-type') || '';
-    const contentService = new ContentService(c.env);
+    const contentService = new ContentService(c.env, c.executionCtx);
 
     // JSON 요청 (텍스트 또는 링크)
     if (contentType.includes('application/json')) {
@@ -167,12 +167,12 @@ contents.post('/', async (c) => {
 
     // 파일 확장자 검증
     const ext = file.name.split('.').pop().toLowerCase();
-    if (!['pdf', 'txt', 'md'].includes(ext)) {
+    if (!['pdf', 'txt', 'md', 'srt', 'vtt'].includes(ext)) {
       return c.json({
         success: false,
         error: {
           code: 'UNSUPPORTED_FILE_TYPE',
-          message: '지원하지 않는 파일 형식입니다. (지원: PDF, TXT, MD)'
+          message: '지원하지 않는 파일 형식입니다. (지원: PDF, TXT, MD, SRT, VTT)'
         }
       }, 415);
     }
@@ -249,6 +249,60 @@ contents.post('/', async (c) => {
       error: {
         code: 'INTERNAL_ERROR',
         message: '콘텐츠 업로드 중 오류가 발생했습니다.'
+      }
+    }, 500);
+  }
+});
+
+/**
+ * POST /contents/regenerate-all-quizzes
+ * 모든 콘텐츠에 대해 퀴즈 재생성 (퀴즈가 없는 콘텐츠만)
+ * NOTE: 정적 라우트는 동적 라우트(/:id) 앞에 정의해야 함
+ */
+contents.post('/regenerate-all-quizzes', async (c) => {
+  try {
+    const contentService = new ContentService(c.env);
+    const result = await contentService.regenerateAllQuizzes();
+
+    return c.json({
+      success: true,
+      data: result
+    });
+
+  } catch (error) {
+    console.error('Regenerate all quizzes error:', error);
+    return c.json({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: '퀴즈 재생성 중 오류가 발생했습니다.'
+      }
+    }, 500);
+  }
+});
+
+/**
+ * POST /contents/reembed
+ * 모든 콘텐츠 재임베딩 (Vectorize 인덱스 재생성 후 사용)
+ * NOTE: 정적 라우트는 동적 라우트(/:id) 앞에 정의해야 함
+ */
+contents.post('/reembed', async (c) => {
+  try {
+    const contentService = new ContentService(c.env);
+    const result = await contentService.reembedAllContents();
+
+    return c.json({
+      success: true,
+      data: result
+    });
+
+  } catch (error) {
+    console.error('Reembed contents error:', error);
+    return c.json({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: '콘텐츠 재임베딩 중 오류가 발생했습니다.'
       }
     }, 500);
   }
@@ -365,26 +419,91 @@ contents.put('/:id', async (c) => {
 });
 
 /**
- * POST /contents/reembed
- * 모든 콘텐츠 재임베딩 (Vectorize 인덱스 재생성 후 사용)
+ * POST /contents/:id/quizzes
+ * 특정 콘텐츠에 대해 퀴즈 재생성
  */
-contents.post('/reembed', async (c) => {
+contents.post('/:id/quizzes', async (c) => {
   try {
+    const id = parseInt(c.req.param('id'), 10);
+
+    if (isNaN(id) || id <= 0) {
+      return c.json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: '유효한 콘텐츠 ID가 필요합니다.'
+        }
+      }, 400);
+    }
+
     const contentService = new ContentService(c.env);
-    const result = await contentService.reembedAllContents();
+    const result = await contentService.regenerateQuizzes(id);
+
+    if (!result) {
+      return c.json({
+        success: false,
+        error: {
+          code: 'NOT_FOUND',
+          message: '콘텐츠를 찾을 수 없습니다.'
+        }
+      }, 404);
+    }
 
     return c.json({
       success: true,
-      data: result
+      data: result,
+      message: `${result.quizCount}개의 퀴즈가 생성되었습니다.`
     });
 
   } catch (error) {
-    console.error('Reembed contents error:', error);
+    console.error('Regenerate quizzes error:', error);
     return c.json({
       success: false,
       error: {
         code: 'INTERNAL_ERROR',
-        message: '콘텐츠 재임베딩 중 오류가 발생했습니다.'
+        message: `퀴즈 생성 중 오류가 발생했습니다: ${error.message}`
+      }
+    }, 500);
+  }
+});
+
+/**
+ * GET /contents/:id/quizzes
+ * 특정 콘텐츠의 퀴즈 목록 조회
+ */
+contents.get('/:id/quizzes', async (c) => {
+  try {
+    const id = parseInt(c.req.param('id'), 10);
+
+    if (isNaN(id) || id <= 0) {
+      return c.json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: '유효한 콘텐츠 ID가 필요합니다.'
+        }
+      }, 400);
+    }
+
+    const contentService = new ContentService(c.env);
+    const quizzes = await contentService.getQuizzes(id);
+
+    return c.json({
+      success: true,
+      data: {
+        contentId: id,
+        quizCount: quizzes.length,
+        quizzes
+      }
+    });
+
+  } catch (error) {
+    console.error('Get quizzes error:', error);
+    return c.json({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: '퀴즈 조회 중 오류가 발생했습니다.'
       }
     }, 500);
   }

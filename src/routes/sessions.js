@@ -135,10 +135,22 @@ sessions.post('/', async (c) => {
       }, 400);
     }
 
-    // 세션 생성
+    // 세션 생성 (AI 설정 포함)
     const insertResult = await c.env.DB
-      .prepare('INSERT INTO TB_SESSION (user_id) VALUES (?)')
-      .bind(userId)
+      .prepare(`
+        INSERT INTO TB_SESSION (user_id, persona, temperature, top_p, max_tokens, summary_count, recommend_count, quiz_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .bind(
+        userId,
+        settings.persona || null,
+        settings.temperature ?? null,
+        settings.topP ?? null,
+        settings.maxTokens ?? null,
+        settings.summaryCount ?? null,
+        settings.recommendCount ?? null,
+        settings.quizCount ?? null
+      )
       .run();
 
     const sessionId = insertResult.meta.last_row_id;
@@ -454,7 +466,7 @@ sessions.put('/:id', async (c) => {
 
 /**
  * GET /sessions/:id/quizzes
- * 세션 퀴즈 조회
+ * 세션에 연결된 콘텐츠의 퀴즈 조회
  */
 sessions.get('/:id/quizzes', async (c) => {
   try {
@@ -472,7 +484,7 @@ sessions.get('/:id/quizzes', async (c) => {
 
     // 세션 존재 확인 (status = 1만)
     const session = await c.env.DB
-      .prepare('SELECT id FROM TB_SESSION WHERE id = ? AND status = 1')
+      .prepare('SELECT id, quiz_count FROM TB_SESSION WHERE id = ? AND status = 1')
       .bind(id)
       .first();
 
@@ -486,9 +498,32 @@ sessions.get('/:id/quizzes', async (c) => {
       }, 404);
     }
 
-    // 퀴즈 조회
+    // 세션에 연결된 콘텐츠 ID 조회
+    const { results: contents } = await c.env.DB
+      .prepare(`
+        SELECT content_id
+        FROM TB_SESSION_CONTENT
+        WHERE session_id = ? AND status = 1
+      `)
+      .bind(id)
+      .all();
+
+    const contentIds = (contents || []).map(c => c.content_id);
+
+    if (contentIds.length === 0) {
+      return c.json({
+        success: true,
+        data: {
+          sessionId: id,
+          quizzes: [],
+          total: 0
+        }
+      });
+    }
+
+    // 콘텐츠의 퀴즈 조회 (설정된 퀴즈 수 만큼 제한)
     const quizService = new QuizService(c.env);
-    const quizzes = await quizService.getQuizzesBySession(id);
+    const quizzes = await quizService.getQuizzesByContentIds(contentIds, session.quiz_count);
 
     return c.json({
       success: true,
@@ -513,10 +548,10 @@ sessions.get('/:id/quizzes', async (c) => {
 
 /**
  * POST /sessions/:id/quizzes
- * 퀴즈 생성
+ * 세션에 연결된 콘텐츠의 퀴즈 재생성
  *
  * Body (optional):
- * - count: 생성할 퀴즈 수 (기본값: 세션 설정값)
+ * - count: 콘텐츠당 생성할 퀴즈 수 (기본값: 세션 설정값)
  */
 sessions.post('/:id/quizzes', async (c) => {
   try {
@@ -548,19 +583,18 @@ sessions.post('/:id/quizzes', async (c) => {
       }, 404);
     }
 
-    // 연결된 콘텐츠 ID 조회
+    // 연결된 콘텐츠 조회 (content 포함)
     const { results: contents } = await c.env.DB
       .prepare(`
-        SELECT content_id
-        FROM TB_SESSION_CONTENT
-        WHERE session_id = ? AND status = 1
+        SELECT c.id, c.content
+        FROM TB_CONTENT c
+        JOIN TB_SESSION_CONTENT sc ON c.id = sc.content_id
+        WHERE sc.session_id = ? AND sc.status = 1 AND c.status = 1
       `)
       .bind(id)
       .all();
 
-    const contentIds = (contents || []).map(c => c.content_id);
-
-    if (contentIds.length === 0) {
+    if (!contents || contents.length === 0) {
       return c.json({
         success: false,
         error: {
@@ -581,33 +615,42 @@ sessions.post('/:id/quizzes', async (c) => {
       // 기본값 사용
     }
 
-    // 기존 퀴즈 삭제 (soft delete)
-    await c.env.DB
-      .prepare('UPDATE TB_QUIZ SET status = -1 WHERE session_id = ?')
-      .bind(id)
-      .run();
-
-    // 퀴즈 생성
     const quizService = new QuizService(c.env);
-    const quizzes = await quizService.generateQuizzes(id, contentIds, quizCount);
+    const allQuizzes = [];
+
+    // 각 콘텐츠별로 퀴즈 재생성
+    for (const content of contents) {
+      // 기존 퀴즈 삭제
+      await quizService.deleteQuizzesByContent(content.id);
+
+      // 새 퀴즈 생성
+      if (content.content && content.content.trim().length > 0) {
+        const quizzes = await quizService.generateQuizzesForContent(
+          content.id,
+          content.content,
+          quizCount
+        );
+        allQuizzes.push(...quizzes);
+      }
+    }
 
     return c.json({
       success: true,
       data: {
         sessionId: id,
-        quizzes,
-        total: quizzes.length
+        quizzes: allQuizzes,
+        total: allQuizzes.length
       },
-      message: `${quizzes.length}개의 퀴즈가 생성되었습니다.`
+      message: `${allQuizzes.length}개의 퀴즈가 재생성되었습니다.`
     }, 201);
 
   } catch (error) {
-    console.error('Generate quizzes error:', error);
+    console.error('Regenerate quizzes error:', error);
     return c.json({
       success: false,
       error: {
         code: 'INTERNAL_ERROR',
-        message: '퀴즈 생성 중 오류가 발생했습니다.'
+        message: '퀴즈 재생성 중 오류가 발생했습니다.'
       }
     }, 500);
   }
@@ -659,11 +702,8 @@ sessions.delete('/:id', async (c) => {
       .bind(id)
       .run();
 
-    // 퀴즈 soft delete (status = -1)
-    await c.env.DB
-      .prepare('UPDATE TB_QUIZ SET status = -1 WHERE session_id = ?')
-      .bind(id)
-      .run();
+    // 퀴즈는 콘텐츠 기반이므로 세션 삭제 시 영향 없음
+    // (TB_QUIZ는 content_id를 사용)
 
     // Vectorize에서 학습 임베딩 삭제
     const learningService = new LearningService(c.env);

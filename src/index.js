@@ -7,19 +7,22 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
+import { swaggerUI } from '@hono/swagger-ui';
 
 // Import routes
 import chatRoutes from './routes/chat.js';
 import contentsRoutes from './routes/contents.js';
 import sessionsRoutes from './routes/sessions.js';
+import authRoutes from './routes/auth.js';
 
 // Import middleware
 import { errorHandler } from './middleware/errorHandler.js';
+import { authMiddleware } from './middleware/auth.js';
+
+// Import OpenAPI spec
+import openApiSpec from './openapi.js';
 
 const app = new Hono();
-
-// Paths that don't require authentication (현재 모든 경로 공개)
-const PUBLIC_PATHS = ['/health', '/docs', '/openapi.json', '/chat', '/contents', '/sessions'];
 
 // Global middleware
 app.use('*', logger());
@@ -31,37 +34,19 @@ app.use('*', cors({
   allowHeaders: ['Content-Type', 'Authorization']
 }));
 
+// 보호 경로에 JWT 인증 미들웨어 적용
+app.use('/chat/*', authMiddleware);
+app.use('/contents/*', authMiddleware);
+app.use('/sessions/*', authMiddleware);
+
 // Routes
+app.route('/auth', authRoutes);
 app.route('/chat', chatRoutes);
 app.route('/contents', contentsRoutes);
 app.route('/sessions', sessionsRoutes);
 
-// Root endpoint
-app.get('/', (c) => {
-  return c.json({
-    name: 'AI Chatbot API',
-    version: '1.0.0',
-    description: 'RAG 기반 AI 챗봇 API',
-    environment: c.env.ENVIRONMENT || 'unknown',
-    endpoints: {
-      chat: 'POST /chat',
-      contents: {
-        list: 'GET /contents',
-        upload: 'POST /contents',
-        get: 'GET /contents/:id',
-        delete: 'DELETE /contents/:id'
-      },
-      sessions: {
-        list: 'GET /sessions',
-        create: 'POST /sessions',
-        get: 'GET /sessions/:id',
-        delete: 'DELETE /sessions/:id'
-      },
-      health: 'GET /health'
-    },
-    timestamp: new Date().toISOString()
-  });
-});
+// Root endpoint → docs 리다이렉트
+app.get('/', (c) => c.redirect('/docs'));
 
 // Health check
 app.get('/health', (c) => {
@@ -70,6 +55,10 @@ app.get('/health', (c) => {
     timestamp: new Date().toISOString()
   });
 });
+
+// API Documentation
+app.get('/openapi.json', (c) => c.json(openApiSpec));
+app.get('/docs', swaggerUI({ url: '/openapi.json' }));
 
 // Error handling
 app.onError(errorHandler);

@@ -7,11 +7,14 @@
  * - Vectorize에 임베딩 저장
  */
 import { EmbeddingService } from './embeddingService.js';
+import { QuizService } from './quizService.js';
 
 export class ContentService {
-  constructor(env) {
+  constructor(env, executionCtx = null) {
     this.env = env;
+    this.executionCtx = executionCtx;
     this.embeddingService = new EmbeddingService(env);
+    this.quizService = new QuizService(env);
   }
 
   /**
@@ -95,6 +98,14 @@ export class ContentService {
 
     // 임베딩 생성 및 Vectorize 저장
     await this.storeContentEmbedding(contentId, contentTitle, contentText);
+
+    // 퀴즈 생성 (백그라운드로 실행, 실패해도 업로드는 성공)
+    const quizPromise = this.generateQuizForContent(contentId, contentText).catch(err => {
+      console.error('[ContentService] Quiz generation failed:', err.message);
+    });
+    if (this.executionCtx) {
+      this.executionCtx.waitUntil(quizPromise);
+    }
 
     return {
       id: contentId,
@@ -184,6 +195,14 @@ export class ContentService {
 
     // 임베딩 생성 및 Vectorize 저장
     await this.storeContentEmbedding(contentId, contentTitle, contentText);
+
+    // 퀴즈 생성 (백그라운드로 실행)
+    const quizPromise = this.generateQuizForContent(contentId, contentText).catch(err => {
+      console.error('[ContentService] Quiz generation failed:', err.message);
+    });
+    if (this.executionCtx) {
+      this.executionCtx.waitUntil(quizPromise);
+    }
 
     return {
       id: contentId,
@@ -294,8 +313,8 @@ export class ContentService {
     const fileSize = file.size;
 
     // 지원 형식 확인
-    if (!['pdf', 'txt', 'md'].includes(fileType)) {
-      throw new Error('지원하지 않는 파일 형식입니다. (지원: PDF, TXT, MD)');
+    if (!['pdf', 'txt', 'md', 'srt', 'vtt'].includes(fileType)) {
+      throw new Error('지원하지 않는 파일 형식입니다. (지원: PDF, TXT, MD, SRT, VTT)');
     }
 
     // 파일 크기 확인 (10MB 제한)
@@ -327,6 +346,14 @@ export class ContentService {
     // 임베딩 생성 및 Vectorize 저장
     await this.storeContentEmbedding(contentId, contentTitle, contentText);
 
+    // 퀴즈 생성 (백그라운드로 실행)
+    const quizPromise = this.generateQuizForContent(contentId, contentText).catch(err => {
+      console.error('[ContentService] Quiz generation failed:', err.message);
+    });
+    if (this.executionCtx) {
+      this.executionCtx.waitUntil(quizPromise);
+    }
+
     return {
       id: contentId,
       title: contentTitle,
@@ -334,6 +361,121 @@ export class ContentService {
       fileType,
       fileSize,
       createdAt: new Date().toISOString()
+    };
+  }
+
+  /**
+   * 콘텐츠에 대한 퀴즈 생성
+   */
+  async generateQuizForContent(contentId, contentText, quizCount = 5) {
+    try {
+      console.log('[ContentService] Generating quiz for content', contentId);
+      await this.quizService.generateQuizzesForContent(contentId, contentText, quizCount);
+    } catch (error) {
+      console.error('[ContentService] Quiz generation error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * 콘텐츠의 퀴즈 목록 조회
+   */
+  async getQuizzes(contentId) {
+    return await this.quizService.getQuizzesByContent(contentId);
+  }
+
+  /**
+   * 콘텐츠 퀴즈 재생성 (기존 퀴즈 삭제 후 새로 생성)
+   */
+  async regenerateQuizzes(contentId, quizCount = 5) {
+    // 콘텐츠 존재 확인
+    const content = await this.env.DB
+      .prepare('SELECT id, content FROM TB_CONTENT WHERE id = ? AND status = 1')
+      .bind(contentId)
+      .first();
+
+    if (!content) {
+      return null;
+    }
+
+    if (!content.content || content.content.trim().length < 100) {
+      throw new Error('콘텐츠 텍스트가 너무 짧아 퀴즈를 생성할 수 없습니다. (최소 100자)');
+    }
+
+    // 기존 퀴즈 삭제
+    await this.quizService.deleteQuizzesByContent(contentId);
+
+    // 새 퀴즈 생성 (동기적으로 실행하여 결과 반환)
+    const quizzes = await this.quizService.generateQuizzesForContent(contentId, content.content, quizCount);
+
+    return {
+      contentId,
+      quizCount: quizzes.length,
+      quizzes
+    };
+  }
+
+  /**
+   * 모든 콘텐츠에 대해 퀴즈 재생성 (퀴즈가 없는 콘텐츠만)
+   */
+  async regenerateAllQuizzes(quizCount = 5) {
+    // 퀴즈가 없는 콘텐츠 조회
+    const { results: contentsWithoutQuizzes } = await this.env.DB
+      .prepare(`
+        SELECT c.id, c.content_nm, c.content
+        FROM TB_CONTENT c
+        LEFT JOIN TB_QUIZ q ON c.id = q.content_id AND q.status = 1
+        WHERE c.status = 1
+        GROUP BY c.id
+        HAVING COUNT(q.id) = 0
+      `)
+      .all();
+
+    if (!contentsWithoutQuizzes || contentsWithoutQuizzes.length === 0) {
+      return {
+        success: true,
+        total: 0,
+        generated: 0,
+        skipped: 0,
+        errors: [],
+        message: '퀴즈를 생성할 콘텐츠가 없습니다.'
+      };
+    }
+
+    let generated = 0;
+    let skipped = 0;
+    const errors = [];
+
+    for (const content of contentsWithoutQuizzes) {
+      try {
+        if (!content.content || content.content.trim().length < 100) {
+          skipped++;
+          console.log(`[regenerateAllQuizzes] Skipping content ${content.id} (too short)`);
+          continue;
+        }
+
+        console.log(`[regenerateAllQuizzes] Generating quizzes for content ${content.id} (${content.content_nm})`);
+        const quizzes = await this.quizService.generateQuizzesForContent(content.id, content.content, quizCount);
+
+        if (quizzes.length > 0) {
+          generated++;
+          console.log(`[regenerateAllQuizzes] Generated ${quizzes.length} quizzes for content ${content.id}`);
+        } else {
+          skipped++;
+        }
+      } catch (error) {
+        errors.push({ id: content.id, title: content.content_nm, error: error.message });
+        console.error(`[regenerateAllQuizzes] Failed for content ${content.id}:`, error.message);
+      }
+    }
+
+    return {
+      success: true,
+      total: contentsWithoutQuizzes.length,
+      generated,
+      skipped,
+      errors: errors.length > 0 ? errors : undefined,
+      message: `${generated}개 콘텐츠에 퀴즈 생성 완료${skipped > 0 ? `, ${skipped}개 스킵` : ''}${errors.length > 0 ? `, ${errors.length}개 실패` : ''}`
     };
   }
 
@@ -518,6 +660,10 @@ export class ContentService {
       case 'md':
         return new TextDecoder('utf-8').decode(buffer);
 
+      case 'srt':
+      case 'vtt':
+        return this.extractTextFromSubtitle(new TextDecoder('utf-8').decode(buffer));
+
       case 'pdf':
         // PDF 텍스트 추출 (간단한 방식)
         return await this.extractPdfText(buffer);
@@ -528,8 +674,8 @@ export class ContentService {
   }
 
   /**
-   * 추출된 텍스트가 PDF 구조 데이터인지 검증
-   * PDF 바이너리/메타데이터가 아닌 실제 텍스트인지 확인
+   * 추출된 텍스트 검증 (최소한의 검증만 수행)
+   * 이전 동작 복원 - 빈 텍스트와 너무 짧은 텍스트만 거부
    */
   validateExtractedText(text) {
     if (!text || text.trim().length === 0) {
@@ -537,60 +683,13 @@ export class ContentService {
       return false;
     }
 
-    // 최소 길이 체크 (100자 이상)
-    if (text.trim().length < 100) {
+    // 최소 길이 체크 (50자 이상)
+    if (text.trim().length < 50) {
       console.warn('[ContentService] Validation failed: too short', text.trim().length);
       return false;
     }
 
-    const sample = text.substring(0, 500);
-    console.log('[ContentService] Validating text sample:', sample.substring(0, 100));
-
-    // PDF 메타데이터 패턴 감지 (toMarkdown 결과의 메타데이터)
-    if (sample.startsWith('document.pdf\nMetadata\n') ||
-        sample.includes('PDFFormatVersion=') ||
-        sample.includes('IsLinearized=') ||
-        sample.includes('IsAcroFormPresent=')) {
-      console.warn('[ContentService] PDF metadata detected in text');
-      return false;
-    }
-
-    // PDF 구조 패턴 감지 (이 패턴이 있으면 실제 텍스트가 아님)
-    const pdfStructurePatterns = [
-      /^%\s*%/,                          // PDF 헤더
-      /^%PDF/,                           // PDF 파일 시작
-      /<</,                              // PDF 딕셔너리 시작
-      /\/Type\s*\/\w+/,                  // PDF 타입 정의
-      /\/Catalog|\/Pages|\/Metadata/,   // PDF 카탈로그
-      /\d+\s+\d+\s+obj/,                 // PDF 오브젝트
-      /\/Filter\s*\/FlateDecode/,        // PDF 필터
-      /\/Length\s+\d+/,                  // PDF 길이
-      /\/Subtype\s*\/XML/                // PDF 서브타입
-    ];
-
-    // PDF 구조 패턴이 3개 이상 발견되면 실패 (완화)
-    let matchCount = 0;
-    for (const pattern of pdfStructurePatterns) {
-      if (pattern.test(sample)) {
-        matchCount++;
-        if (matchCount >= 3) {
-          console.warn('[ContentService] PDF structure data detected, matchCount:', matchCount);
-          return false;
-        }
-      }
-    }
-
-    // 의미있는 텍스트 비율 확인 (한글, 영문, 숫자 포함)
-    const meaningfulChars = (text.match(/[가-힣a-zA-Z0-9]/g) || []).length;
-    const ratio = meaningfulChars / text.length;
-    console.log('[ContentService] Meaningful text ratio:', ratio.toFixed(2));
-
-    // 15%로 완화 (숫자가 많은 문서 허용)
-    if (ratio < 0.15) {
-      console.warn('[ContentService] Low meaningful text ratio:', ratio.toFixed(2));
-      return false;
-    }
-
+    console.log('[ContentService] Text validation passed, length:', text.trim().length);
     return true;
   }
 
@@ -619,9 +718,11 @@ export class ContentService {
           let rawText = result.data;
 
           // 메타데이터 블록 제거 (document.pdf\nMetadata\n...Contents\n 형식)
-          const contentsIndex = rawText.indexOf('\n\nContents\n');
-          if (contentsIndex !== -1) {
-            rawText = rawText.substring(contentsIndex + '\n\nContents\n'.length);
+          // Contents 마커 찾기 (줄바꿈 개수 상관없이)
+          const contentsMatch = rawText.match(/\n+Contents\n/);
+          if (contentsMatch) {
+            const contentsIndex = rawText.indexOf(contentsMatch[0]);
+            rawText = rawText.substring(contentsIndex + contentsMatch[0].length);
           } else if (rawText.startsWith('document.pdf\nMetadata\n')) {
             // Contents 마커가 없는 경우, 메타데이터 끝까지 제거
             const metadataEndIndex = rawText.indexOf('\n\n', 100);

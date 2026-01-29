@@ -2,33 +2,37 @@
  * Quiz Service
  *
  * 학습 콘텐츠를 기반으로 퀴즈를 생성하는 서비스입니다.
- * OpenAI API를 사용하여 4지선다와 OX퀴즈를 생성합니다.
+ * Cloudflare Workers AI를 사용하여 4지선다와 OX퀴즈를 생성합니다.
+ *
+ * 퀴즈는 콘텐츠 업로드 시 생성되어 TB_QUIZ에 content_id로 저장됩니다.
+ * 세션 생성 시에는 연결된 콘텐츠의 퀴즈를 조회하여 사용합니다.
  */
 export class QuizService {
   constructor(env) {
     this.env = env;
-    this.model = 'gpt-4o-mini';
-    this.apiUrl = 'https://api.openai.com/v1/chat/completions';
+    this.model = '@cf/meta/llama-3.1-8b-instruct';
   }
 
   /**
-   * 세션에 연결된 콘텐츠 기반으로 퀴즈 생성
-   * @param {number} sessionId - 세션 ID
-   * @param {number[]} contentIds - 콘텐츠 ID 배열
-   * @param {number} quizCount - 생성할 퀴즈 수
+   * 콘텐츠 기반으로 퀴즈 생성 (콘텐츠 업로드 시 호출)
+   * @param {number} contentId - 콘텐츠 ID
+   * @param {string} content - 콘텐츠 텍스트
+   * @param {number} quizCount - 생성할 퀴즈 수 (기본 5개)
    * @returns {Promise<Object[]>} - 생성된 퀴즈 배열
    */
-  async generateQuizzes(sessionId, contentIds, quizCount = 5) {
-    if (!contentIds || contentIds.length === 0) {
+  async generateQuizzesForContent(contentId, content, quizCount = 5) {
+    if (!content || content.trim().length === 0) {
+      console.log('[QuizService] No content provided, skipping quiz generation');
       return [];
     }
 
-    // 콘텐츠에서 청크 가져오기
-    const context = await this.getContentContext(contentIds);
-
-    if (!context || context.trim().length === 0) {
+    // 콘텐츠가 너무 짧으면 스킵
+    if (content.trim().length < 100) {
+      console.log('[QuizService] Content too short for quiz generation');
       return [];
     }
+
+    console.log('[QuizService] Generating quizzes for content', contentId, 'count:', quizCount);
 
     // 퀴즈 생성 (4지선다와 OX 혼합)
     const choiceCount = Math.ceil(quizCount / 2);
@@ -38,45 +42,61 @@ export class QuizService {
 
     // 4지선다 퀴즈 생성
     if (choiceCount > 0) {
-      const choiceQuizzes = await this.generateChoiceQuizzes(context, choiceCount);
+      const choiceQuizzes = await this.generateChoiceQuizzes(content, choiceCount);
       quizzes.push(...choiceQuizzes);
     }
 
     // OX 퀴즈 생성
     if (oxCount > 0) {
-      const oxQuizzes = await this.generateOXQuizzes(context, oxCount);
+      const oxQuizzes = await this.generateOXQuizzes(content, oxCount);
       quizzes.push(...oxQuizzes);
     }
 
     // DB에 저장
-    await this.saveQuizzes(sessionId, quizzes);
+    if (quizzes.length > 0) {
+      await this.saveQuizzesForContent(contentId, quizzes);
+      console.log('[QuizService] Saved', quizzes.length, 'quizzes for content', contentId);
+    }
 
     return quizzes;
   }
 
   /**
-   * 콘텐츠에서 컨텍스트 텍스트 추출
+   * 콘텐츠에서 컨텍스트 텍스트 추출 (여러 콘텐츠)
    */
   async getContentContext(contentIds) {
     const placeholders = contentIds.map(() => '?').join(',');
 
     const { results } = await this.env.DB
       .prepare(`
-        SELECT c.content
-        FROM TB_CHUNK c
-        JOIN TB_CONTENT ct ON c.content_id = ct.id
-        WHERE ct.id IN (${placeholders}) AND c.status = 1 AND ct.status = 1
-        ORDER BY ct.id, c.position
-        LIMIT 20
+        SELECT content
+        FROM TB_CONTENT
+        WHERE id IN (${placeholders}) AND status = 1
       `)
       .bind(...contentIds)
       .all();
 
-    return (results || []).map(r => r.content).join('\n\n');
+    return (results || []).map(r => r.content).filter(c => c).join('\n\n');
   }
 
   /**
-   * 4지선다 퀴즈 생성
+   * Workers AI로 LLM 호출
+   */
+  async callWorkersAI(systemPrompt, userPrompt) {
+    const result = await this.env.AI.run(this.model, {
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      max_tokens: 2048,
+      temperature: 0.7
+    });
+
+    return result.response || '';
+  }
+
+  /**
+   * 4지선다 퀴즈 생성 (최대 2회 재시도)
    */
   async generateChoiceQuizzes(context, count) {
     const systemPrompt = `당신은 교육 콘텐츠 전문가입니다. 주어진 내용을 바탕으로 4지선다 퀴즈를 생성해 주세요.
@@ -93,56 +113,48 @@ export class QuizService {
 
 규칙:
 1. answer는 정답 선택지의 번호입니다 (1, 2, 3, 4 중 하나)
-2. 선택지는 반드시 4개여야 합니다
+2. options 배열에는 반드시 정확히 4개의 선택지가 포함되어야 합니다. 3개도 안 되고 5개도 안 됩니다. 꼭 4개!
 3. 제공된 내용에 기반한 문제만 출제하세요
-4. 한국어로 작성하세요`;
+4. 한국어로 작성하세요
+5. JSON 배열만 출력하세요. 다른 텍스트는 출력하지 마세요.`;
 
-    const userPrompt = `다음 내용을 바탕으로 4지선다 퀴즈 ${count}개를 생성해 주세요.
+    const userPrompt = `다음 내용을 바탕으로 4지선다 퀴즈 ${count}개를 생성해 주세요. 각 문제에는 반드시 4개의 선택지가 있어야 합니다.
 
 내용:
-${context}`;
+${context.substring(0, 4000)}`;
 
-    try {
-      const response = await fetch(this.apiUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: this.model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ],
-          max_tokens: 2048,
-          temperature: 0.7
-        })
-      });
+    const maxRetries = 3;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const content = await this.callWorkersAI(systemPrompt, userPrompt);
 
-      if (!response.ok) {
-        console.error('Choice quiz generation failed');
-        return [];
+        // JSON 파싱 (```json ... ``` 제거)
+        const jsonMatch = content.match(/\[[\s\S]*\]/);
+        const quizzes = JSON.parse(jsonMatch ? jsonMatch[0] : '[]');
+
+        const valid = quizzes
+          .filter(q => Array.isArray(q.options) && q.options.length === 4)
+          .map(q => ({
+            quiz_type: 'choice',
+            question: q.question,
+            options: JSON.stringify(q.options),
+            answer: String(q.answer),
+            explanation: q.explanation
+          }));
+
+        if (valid.length > 0) {
+          console.log(`[QuizService] Choice quiz attempt ${attempt}: ${valid.length}/${count} valid`);
+          return valid;
+        }
+
+        console.warn(`[QuizService] Choice quiz attempt ${attempt}: no valid quizzes (all filtered), retrying...`);
+      } catch (error) {
+        console.error(`[QuizService] Choice quiz attempt ${attempt} error:`, error.message);
       }
-
-      const result = await response.json();
-      const content = result.choices?.[0]?.message?.content || '[]';
-
-      // JSON 파싱 (```json ... ``` 제거)
-      const jsonMatch = content.match(/\[[\s\S]*\]/);
-      const quizzes = JSON.parse(jsonMatch ? jsonMatch[0] : '[]');
-
-      return quizzes.map(q => ({
-        quiz_type: 'choice',
-        question: q.question,
-        options: JSON.stringify(q.options),
-        answer: String(q.answer),
-        explanation: q.explanation
-      }));
-    } catch (error) {
-      console.error('Choice quiz generation error:', error);
-      return [];
     }
+
+    console.error('[QuizService] Choice quiz generation failed after', maxRetries, 'attempts');
+    return [];
   }
 
   /**
@@ -164,38 +176,16 @@ ${context}`;
 1. answer는 "O" 또는 "X"입니다
 2. 문제는 명확한 참/거짓 판단이 가능해야 합니다
 3. 제공된 내용에 기반한 문제만 출제하세요
-4. 한국어로 작성하세요`;
+4. 한국어로 작성하세요
+5. JSON 배열만 출력하세요. 다른 텍스트는 출력하지 마세요.`;
 
     const userPrompt = `다음 내용을 바탕으로 OX 퀴즈 ${count}개를 생성해 주세요.
 
 내용:
-${context}`;
+${context.substring(0, 4000)}`;
 
     try {
-      const response = await fetch(this.apiUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: this.model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ],
-          max_tokens: 2048,
-          temperature: 0.7
-        })
-      });
-
-      if (!response.ok) {
-        console.error('OX quiz generation failed');
-        return [];
-      }
-
-      const result = await response.json();
-      const content = result.choices?.[0]?.message?.content || '[]';
+      const content = await this.callWorkersAI(systemPrompt, userPrompt);
 
       // JSON 파싱 (```json ... ``` 제거)
       const jsonMatch = content.match(/\[[\s\S]*\]/);
@@ -215,18 +205,18 @@ ${context}`;
   }
 
   /**
-   * 퀴즈 DB 저장
+   * 퀴즈 DB 저장 (콘텐츠 기반)
    */
-  async saveQuizzes(sessionId, quizzes) {
+  async saveQuizzesForContent(contentId, quizzes) {
     for (let i = 0; i < quizzes.length; i++) {
       const quiz = quizzes[i];
       await this.env.DB
         .prepare(`
-          INSERT INTO TB_QUIZ (session_id, quiz_type, question, options, answer, explanation, position)
+          INSERT INTO TB_QUIZ (content_id, quiz_type, question, options, answer, explanation, position)
           VALUES (?, ?, ?, ?, ?, ?, ?)
         `)
         .bind(
-          sessionId,
+          contentId,
           quiz.quiz_type,
           quiz.question,
           quiz.options,
@@ -239,17 +229,17 @@ ${context}`;
   }
 
   /**
-   * 세션의 퀴즈 목록 조회
+   * 콘텐츠의 퀴즈 목록 조회
    */
-  async getQuizzesBySession(sessionId) {
+  async getQuizzesByContent(contentId) {
     const { results } = await this.env.DB
       .prepare(`
         SELECT id, quiz_type, question, options, answer, explanation, position, created_at
         FROM TB_QUIZ
-        WHERE session_id = ? AND status = 1
+        WHERE content_id = ? AND status = 1
         ORDER BY position ASC
       `)
-      .bind(sessionId)
+      .bind(contentId)
       .all();
 
     return (results || []).map(q => ({
@@ -262,5 +252,55 @@ ${context}`;
       position: q.position,
       createdAt: q.created_at
     }));
+  }
+
+  /**
+   * 여러 콘텐츠의 퀴즈 목록 조회 (세션용)
+   * @param {number[]} contentIds - 콘텐츠 ID 배열
+   * @param {number} limit - 최대 퀴즈 수 (기본 전체)
+   */
+  async getQuizzesByContentIds(contentIds, limit = null) {
+    if (!contentIds || contentIds.length === 0) {
+      return [];
+    }
+
+    const placeholders = contentIds.map(() => '?').join(',');
+    let query = `
+      SELECT id, content_id, quiz_type, question, options, answer, explanation, position, created_at
+      FROM TB_QUIZ
+      WHERE content_id IN (${placeholders}) AND status = 1
+      ORDER BY content_id, position ASC
+    `;
+
+    if (limit) {
+      query += ` LIMIT ${limit}`;
+    }
+
+    const { results } = await this.env.DB
+      .prepare(query)
+      .bind(...contentIds)
+      .all();
+
+    return (results || []).map(q => ({
+      id: q.id,
+      contentId: q.content_id,
+      quizType: q.quiz_type,
+      question: q.question,
+      options: q.options ? JSON.parse(q.options) : null,
+      answer: q.answer,
+      explanation: q.explanation,
+      position: q.position,
+      createdAt: q.created_at
+    }));
+  }
+
+  /**
+   * 콘텐츠의 퀴즈 삭제
+   */
+  async deleteQuizzesByContent(contentId) {
+    await this.env.DB
+      .prepare('UPDATE TB_QUIZ SET status = -1 WHERE content_id = ?')
+      .bind(contentId)
+      .run();
   }
 }

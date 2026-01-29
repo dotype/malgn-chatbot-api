@@ -118,26 +118,23 @@ export class LearningService {
 4. 추천 질문은 정확히 ${recommendCount}개만 생성
 5. 한국어로 작성
 
-★★★ 추천 질문 생성 - 매우 중요 ★★★
+★★★ 추천 질문 생성 규칙 ★★★
 
-[질문 형식 - 반드시 이 형식만 사용]
-- "~란/은/는 무엇인가요?"
-- "~의 특징은 무엇인가요?"
-- "~에는 어떤 것들이 있나요?"
+반드시 콘텐츠에 나오는 실제 용어를 사용하여 질문을 만드세요.
 
-[좋은 질문 예시]
-- "맑은소프트란 무엇인가요?"
-- "LMS의 주요 기능은 무엇인가요?"
-- "제공하는 서비스에는 어떤 것들이 있나요?"
+[올바른 질문 예시]
+- "단어란 무엇인가요?"
+- "구의 특징은 무엇인가요?"
+- "명사에는 어떤 것들이 있나요?"
+- "동사란 무엇인가요?"
+- "형용사의 역할은 무엇인가요?"
 
-[나쁜 질문 예시 - 절대 생성 금지]
-- "어떻게 관리하나요?" ← 금지 (방법 질문)
-- "어떻게 하는지 설명해 주세요" ← 금지 (설명 요청)
-- "왜 ~인가요?" ← 금지 (이유 질문)
-- "~의 장점은 무엇인가요?" ← 금지 (평가 질문)
-- "앞으로 어떻게 발전할까요?" ← 금지 (미래 예측)
+[금지 - 절대 이렇게 생성하지 마세요]
+- 물결표(~) 사용 금지
+- "~란/은/는" 같은 템플릿 텍스트 금지
+- 콘텐츠에 없는 용어로 질문 금지
 
-질문은 콘텐츠에 직접 답이 있는 단순한 사실 확인 질문만 생성하세요.`;
+질문은 반드시 콘텐츠에서 언급된 핵심 개념(예: 단어, 구, 절, 명사, 동사 등)을 사용하세요.`;
 
     const contentTitlesInfo = contentTitles.length > 0
       ? `\n\n학습 자료 제목: ${contentTitles.join(', ')}`
@@ -191,24 +188,27 @@ ${context}`;
         recommendedQuestions = recommendedQuestions.slice(0, recommendCount);
       }
 
-      // 템플릿 텍스트 필터링 (AI가 예시를 그대로 복사한 경우)
-      const templatePatterns = ['~란/은/는', '~의 특징', '~에는 어떤'];
+      // 템플릿 텍스트 필터링
       if (Array.isArray(recommendedQuestions)) {
-        const hasTemplateText = recommendedQuestions.some(q =>
-          templatePatterns.some(p => q.includes(p))
+        // 물결표(~)가 포함된 템플릿 질문 필터링
+        const hasTemplatePlaceholder = recommendedQuestions.some(q => q.includes('~'));
+        // "추천 질문 1" 같은 플레이스홀더 필터링
+        const hasPlaceholder = recommendedQuestions.some(q =>
+          /^추천 질문 \d+$/.test(q.trim())
         );
-        if (hasTemplateText) {
-          console.warn('[LearningService] Template text detected in questions, setting to null');
+        if (hasTemplatePlaceholder || hasPlaceholder) {
+          console.warn('[LearningService] Template/placeholder text detected in questions, setting to null');
           recommendedQuestions = null;
         }
       }
 
       if (Array.isArray(learningSummary)) {
-        const hasTemplateText = learningSummary.some(s =>
-          s.startsWith('요약 ') && /요약 \d+/.test(s)
+        // "요약 1", "요약 2" 같은 플레이스홀더만 필터링
+        const hasPlaceholder = learningSummary.some(s =>
+          /^요약 \d+$/.test(s.trim())
         );
-        if (hasTemplateText) {
-          console.warn('[LearningService] Template text detected in summary, setting to null');
+        if (hasPlaceholder) {
+          console.warn('[LearningService] Placeholder text detected in summary, setting to null');
           learningSummary = null;
         }
       }

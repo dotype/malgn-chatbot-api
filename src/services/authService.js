@@ -11,32 +11,21 @@ export class AuthService {
 
   /**
    * Authenticate user with username and password
-   * TODO: Replace with actual database lookup using D1
+   * 환경변수 기반 관리자 인증
    */
   async authenticateUser(username, password) {
-    // TODO: Replace with actual database query
-    // Example with D1:
-    // const user = await D1.queryFirst(this.env.DB,
-    //   'SELECT * FROM users WHERE username = ?', [username]);
+    const adminUsername = this.env.ADMIN_USERNAME;
+    const adminPassword = this.env.ADMIN_PASSWORD;
 
-    // This is a mock implementation for demonstration
-    const mockUsers = {
-      'admin': { id: '1', password: 'admin123', email: 'admin@example.com', role: 'admin' },
-      'user': { id: '2', password: 'user123', email: 'user@example.com', role: 'user' }
-    };
+    if (!adminUsername || !adminPassword) {
+      throw new Error('인증 설정이 되어 있지 않습니다.');
+    }
 
-    const user = mockUsers[username];
-
-    if (!user || user.password !== password) {
+    if (username !== adminUsername || password !== adminPassword) {
       return null;
     }
 
-    return {
-      id: user.id,
-      username: username,
-      email: user.email,
-      role: user.role
-    };
+    return { id: '1', username, email: '', role: 'admin' };
   }
 
   /**
