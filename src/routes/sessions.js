@@ -105,6 +105,9 @@ sessions.get('/', async (c) => {
  *
  * Body:
  * - user_id: 사용자 ID (선택)
+ * - course_id: 코스 ID (선택)
+ * - course_user_id: 코스 사용자 ID (선택)
+ * - lesson_id: 레슨 ID (선택)
  * - content_ids: 연결할 콘텐츠 ID 배열 (필수, 최소 1개)
  * - settings: AI 설정 (선택) { persona, temperature, topP }
  */
@@ -112,12 +115,18 @@ sessions.post('/', async (c) => {
   try {
     // 요청 본문 파싱
     let userId = null;
+    let courseId = null;
+    let courseUserId = null;
+    let lessonId = null;
     let contentIds = [];
     let settings = {};
 
     try {
       const body = await c.req.json();
       userId = body.user_id || null;
+      courseId = body.course_id || null;
+      courseUserId = body.course_user_id || null;
+      lessonId = body.lesson_id || null;
       contentIds = Array.isArray(body.content_ids) ? body.content_ids : [];
       settings = body.settings || {};
     } catch {
@@ -138,10 +147,13 @@ sessions.post('/', async (c) => {
     // 세션 생성 (AI 설정 포함)
     const insertResult = await c.env.DB
       .prepare(`
-        INSERT INTO TB_SESSION (user_id, persona, temperature, top_p, max_tokens, summary_count, recommend_count, quiz_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO TB_SESSION (course_id, course_user_id, lesson_id, user_id, persona, temperature, top_p, max_tokens, summary_count, recommend_count, quiz_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .bind(
+        courseId,
+        courseUserId,
+        lessonId,
         userId,
         settings.persona || null,
         settings.temperature ?? null,

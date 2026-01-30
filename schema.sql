@@ -23,6 +23,9 @@ CREATE INDEX IF NOT EXISTS idx_content_status ON TB_CONTENT(status);
 -- TB_SESSION: 채팅 세션
 CREATE TABLE IF NOT EXISTS TB_SESSION (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  course_id INTEGER,
+  course_user_id INTEGER,
+  lesson_id INTEGER,
   user_id INTEGER,
   session_nm TEXT,
   persona TEXT DEFAULT '당신은 친절하고 전문적인 AI 튜터입니다. 학생들이 이해하기 쉽게 설명하고, 질문에 정확하게 답변해 주세요.',
