@@ -116,6 +116,10 @@ index_name = "malgn-chatbot-vectors-user2"
 #
 # 2. 위 템플릿을 복사하여 [env.<tenant_id>] 섹션 추가
 #    - 생성된 리소스 ID를 해당 섹션에 입력
+#    - AI Gateway 설정 포함:
+#      [env.<tenant_id>.ai]
+#      binding = "AI"
+#      gateway = { id = "malgn-chatbot", cache_ttl = 3600 }
 #
 # 3. D1 스키마 적용:
 #    wrangler d1 execute malgn-chatbot-db-<tenant_id> --file=./schema.sql

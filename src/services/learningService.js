@@ -159,14 +159,23 @@ ${context}`;
       console.log('[LearningService] Calling Workers AI with model:', this.model);
       console.log('[LearningService] User prompt length:', userPrompt.length);
 
-      const result = await this.env.AI.run(this.model, {
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
-        max_tokens: 1024,
-        temperature: temperature
-      });
+      const result = await this.env.AI.run(
+        this.model,
+        {
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          max_tokens: 1024,
+          temperature: temperature
+        },
+        {
+          gateway: {
+            id: 'malgn-chatbot',
+            skipCache: false
+          }
+        }
+      );
 
       console.log('[LearningService] Workers AI result:', JSON.stringify(result));
 

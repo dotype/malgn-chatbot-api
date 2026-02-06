@@ -90,17 +90,26 @@ export class QuizService {
   }
 
   /**
-   * Workers AI로 LLM 호출
+   * Workers AI로 LLM 호출 (AI Gateway 사용)
    */
   async callWorkersAI(systemPrompt, userPrompt) {
-    const result = await this.env.AI.run(this.model, {
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
-      ],
-      max_tokens: 2048,
-      temperature: 0.7
-    });
+    const result = await this.env.AI.run(
+      this.model,
+      {
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        max_tokens: 2048,
+        temperature: 0.7
+      },
+      {
+        gateway: {
+          id: 'malgn-chatbot',
+          skipCache: false
+        }
+      }
+    );
 
     return result.response || '';
   }
