@@ -8,11 +8,13 @@
  * 4. 학습된 정보 기반 응답 생성
  */
 import { EmbeddingService } from './embeddingService.js';
+import { QuizService } from './quizService.js';
 
 export class ChatService {
   constructor(env) {
     this.env = env;
     this.embeddingService = new EmbeddingService(env);
+    this.quizService = new QuizService(env);
     // Workers AI 사용 (지역 제한 없음)
     this.llmModel = '@cf/meta/llama-3.1-8b-instruct';
 
@@ -136,6 +138,10 @@ export class ChatService {
       context = await this.buildContext(searchResults);
     }
 
+    // 퀴즈 정답 정보를 컨텍스트에 추가
+    const quizContext = await this.getQuizContext(allowedContentIds);
+    if (quizContext) context += quizContext;
+
     // 5. 이전 대화 내역 조회 (최근 10개 메시지)
     const chatHistory = await this.getChatHistory(currentSessionId, 10);
     console.log('[ChatService] Chat history loaded:', chatHistory.length, 'messages');
@@ -254,6 +260,30 @@ export class ChatService {
     }
 
     return contextParts.join('\n\n---\n\n');
+  }
+
+  /**
+   * 세션에 연결된 콘텐츠의 퀴즈를 컨텍스트 문자열로 변환
+   */
+  async getQuizContext(contentIds) {
+    if (!contentIds || contentIds.length === 0) return '';
+
+    try {
+      const quizzes = await this.quizService.getQuizzesByContentIds(contentIds);
+      if (!quizzes || quizzes.length === 0) return '';
+
+      const quizLines = quizzes.map(q => {
+        const type = q.quizType === 'choice' ? '4지선다' : 'OX퀴즈';
+        let line = `[${type}] Q: ${q.question} → 정답: ${q.answer}`;
+        if (q.explanation) line += ` (해설: ${q.explanation})`;
+        return line;
+      });
+
+      return `\n\n---\n\n[퀴즈 정답 정보 - 학습자 질문에 이 정보를 근거로 정확히 판단하세요]\n${quizLines.join('\n')}`;
+    } catch (error) {
+      console.error('Get quiz context error:', error);
+      return '';
+    }
   }
 
   /**
@@ -460,6 +490,10 @@ ${context}`;
     } else {
       context = await this.buildContext(searchResults);
     }
+
+    // 퀴즈 정답 정보를 컨텍스트에 추가
+    const quizContext = await this.getQuizContext(allowedContentIds);
+    if (quizContext) context += quizContext;
 
     // 대화 내역 조회
     const chatHistory = await this.getChatHistory(currentSessionId, 10);
