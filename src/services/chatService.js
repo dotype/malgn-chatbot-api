@@ -117,10 +117,9 @@ export class ChatService {
       this.embeddingService.embed(message)
     ]);
 
-    // 2. 벡터 검색 + 퀴즈 컨텍스트 + 대화 내역을 모두 병렬 실행
-    const [searchResults, quizContext, chatHistory] = await Promise.all([
+    // 2. 벡터 검색 + 대화 내역을 병렬 실행
+    const [searchResults, chatHistory] = await Promise.all([
       this.searchSimilarDocuments(queryEmbedding, 5, allowedContentIds, currentSessionId),
-      this.getQuizContext(allowedContentIds),
       this.getChatHistory(currentSessionId, 6)
     ]);
     console.log('[ChatService] Chat history loaded:', chatHistory.length, 'messages');
@@ -141,7 +140,6 @@ export class ChatService {
     } else {
       context = await this.buildContext(searchResults);
     }
-    if (quizContext) context += quizContext;
 
     // 6. LLM으로 응답 생성 (이전 대화 포함)
     const response = await this.generateResponse(message, context, chatHistory);
@@ -470,14 +468,13 @@ ${context}`;
     const t1 = Date.now();
     console.log(`[PERF] 1단계 콘텐츠ID+임베딩: ${t1 - t0}ms`);
 
-    // 벡터 검색 + 퀴즈 컨텍스트 + 대화 내역을 모두 병렬 실행
-    const [searchResults, quizContext, chatHistory] = await Promise.all([
+    // 벡터 검색 + 대화 내역을 병렬 실행
+    const [searchResults, chatHistory] = await Promise.all([
       this.searchSimilarDocuments(queryEmbedding, 5, allowedContentIds, currentSessionId),
-      this.getQuizContext(allowedContentIds),
       this.getChatHistory(currentSessionId, 6)
     ]);
     const t2 = Date.now();
-    console.log(`[PERF] 2단계 벡터검색+퀴즈+대화내역: ${t2 - t1}ms`);
+    console.log(`[PERF] 2단계 벡터검색+대화내역: ${t2 - t1}ms`);
 
     // 컨텍스트 구성
     let context = '';
@@ -491,7 +488,6 @@ ${context}`;
     } else {
       context = await this.buildContext(searchResults);
     }
-    if (quizContext) context += quizContext;
     const t3 = Date.now();
     console.log(`[PERF] 3단계 컨텍스트 구성: ${t3 - t2}ms`);
     console.log(`[PERF] prepareChatContext 총: ${t3 - t0}ms`);
