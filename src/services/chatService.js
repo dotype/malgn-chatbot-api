@@ -111,11 +111,11 @@ export class ChatService {
     // 세션 ID 사용 (숫자형)
     const currentSessionId = sessionId;
 
-    // 세션에 연결된 콘텐츠 ID 조회 (답변 범위 설정)
-    const allowedContentIds = await this.getSessionContentIds(currentSessionId);
-
-    // 1. 질문을 임베딩으로 변환
-    const queryEmbedding = await this.embeddingService.embed(message);
+    // 1. 콘텐츠 ID 조회 + 질문 임베딩을 병렬 실행
+    const [allowedContentIds, queryEmbedding] = await Promise.all([
+      this.getSessionContentIds(currentSessionId),
+      this.embeddingService.embed(message)
+    ]);
 
     // 2. Vectorize에서 유사 콘텐츠 검색 (콘텐츠 필터링 적용, 학습 목표/요약 포함)
     const searchResults = await this.searchSimilarDocuments(queryEmbedding, 5, allowedContentIds, currentSessionId);
@@ -138,12 +138,12 @@ export class ChatService {
       context = await this.buildContext(searchResults);
     }
 
-    // 퀴즈 정답 정보를 컨텍스트에 추가
-    const quizContext = await this.getQuizContext(allowedContentIds);
+    // 5. 퀴즈 컨텍스트 + 대화 내역을 병렬 조회
+    const [quizContext, chatHistory] = await Promise.all([
+      this.getQuizContext(allowedContentIds),
+      this.getChatHistory(currentSessionId, 6)
+    ]);
     if (quizContext) context += quizContext;
-
-    // 5. 이전 대화 내역 조회 (최근 10개 메시지)
-    const chatHistory = await this.getChatHistory(currentSessionId, 10);
     console.log('[ChatService] Chat history loaded:', chatHistory.length, 'messages');
 
     // 6. LLM으로 응답 생성 (이전 대화 포함)
@@ -423,23 +423,20 @@ ${context}`;
    */
   async saveMessagesToDB(sessionId, userMessage, assistantResponse) {
     try {
-      // 사용자 메시지 저장
-      await this.env.DB
-        .prepare('INSERT INTO TB_MESSAGE (session_id, role, content) VALUES (?, ?, ?)')
-        .bind(sessionId, 'user', userMessage)
-        .run();
-
-      // AI 응답 저장
-      await this.env.DB
-        .prepare('INSERT INTO TB_MESSAGE (session_id, role, content) VALUES (?, ?, ?)')
-        .bind(sessionId, 'assistant', assistantResponse)
-        .run();
-
-      // 세션 updated_at 갱신
-      await this.env.DB
-        .prepare('UPDATE TB_SESSION SET updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-        .bind(sessionId)
-        .run();
+      await Promise.all([
+        this.env.DB
+          .prepare('INSERT INTO TB_MESSAGE (session_id, role, content) VALUES (?, ?, ?)')
+          .bind(sessionId, 'user', userMessage)
+          .run(),
+        this.env.DB
+          .prepare('INSERT INTO TB_MESSAGE (session_id, role, content) VALUES (?, ?, ?)')
+          .bind(sessionId, 'assistant', assistantResponse)
+          .run(),
+        this.env.DB
+          .prepare('UPDATE TB_SESSION SET updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .bind(sessionId)
+          .run()
+      ]);
 
       console.log(`[ChatService] Messages saved to DB for session ${sessionId}`);
     } catch (error) {
@@ -491,12 +488,12 @@ ${context}`;
       context = await this.buildContext(searchResults);
     }
 
-    // 퀴즈 정답 정보를 컨텍스트에 추가
-    const quizContext = await this.getQuizContext(allowedContentIds);
+    // 퀴즈 컨텍스트 + 대화 내역을 병렬 조회
+    const [quizContext, chatHistory] = await Promise.all([
+      this.getQuizContext(allowedContentIds),
+      this.getChatHistory(currentSessionId, 6)
+    ]);
     if (quizContext) context += quizContext;
-
-    // 대화 내역 조회
-    const chatHistory = await this.getChatHistory(currentSessionId, 10);
     console.log('[ChatService] Chat history loaded:', chatHistory.length, 'messages');
 
     // LLM 메시지 배열 구성
