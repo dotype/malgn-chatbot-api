@@ -117,8 +117,13 @@ export class ChatService {
       this.embeddingService.embed(message)
     ]);
 
-    // 2. Vectorize에서 유사 콘텐츠 검색 (콘텐츠 필터링 적용, 학습 목표/요약 포함)
-    const searchResults = await this.searchSimilarDocuments(queryEmbedding, 5, allowedContentIds, currentSessionId);
+    // 2. 벡터 검색 + 퀴즈 컨텍스트 + 대화 내역을 모두 병렬 실행
+    const [searchResults, quizContext, chatHistory] = await Promise.all([
+      this.searchSimilarDocuments(queryEmbedding, 5, allowedContentIds, currentSessionId),
+      this.getQuizContext(allowedContentIds),
+      this.getChatHistory(currentSessionId, 6)
+    ]);
+    console.log('[ChatService] Chat history loaded:', chatHistory.length, 'messages');
 
     // 3. 검색 결과가 없으면 세션 학습 데이터로 fallback
     let context = '';
@@ -134,17 +139,9 @@ export class ChatService {
         };
       }
     } else {
-      // 4. 컨텍스트 구성
       context = await this.buildContext(searchResults);
     }
-
-    // 5. 퀴즈 컨텍스트 + 대화 내역을 병렬 조회
-    const [quizContext, chatHistory] = await Promise.all([
-      this.getQuizContext(allowedContentIds),
-      this.getChatHistory(currentSessionId, 6)
-    ]);
     if (quizContext) context += quizContext;
-    console.log('[ChatService] Chat history loaded:', chatHistory.length, 'messages');
 
     // 6. LLM으로 응답 생성 (이전 대화 포함)
     const response = await this.generateResponse(message, context, chatHistory);
@@ -180,10 +177,10 @@ export class ChatService {
 
     try {
       // 콘텐츠 필터가 있으면 더 많이 검색 후 필터링
-      const searchTopK = allowedContentIds.length > 0 ? topK * 3 : topK;
+      const searchTopK = allowedContentIds.length > 0 ? topK * 2 : topK;
 
       const results = await this.env.VECTORIZE.query(queryEmbedding, {
-        topK: searchTopK + 10, // 학습 목표/요약도 포함되므로 더 많이 검색
+        topK: searchTopK + 5, // 학습 목표/요약 포함하여 여유분 검색
         returnMetadata: true,
         returnValues: false
       });
@@ -423,19 +420,17 @@ ${context}`;
    */
   async saveMessagesToDB(sessionId, userMessage, assistantResponse) {
     try {
-      await Promise.all([
+      // D1 batch: 단일 라운드트립으로 3개 쿼리 실행
+      await this.env.DB.batch([
         this.env.DB
           .prepare('INSERT INTO TB_MESSAGE (session_id, role, content) VALUES (?, ?, ?)')
-          .bind(sessionId, 'user', userMessage)
-          .run(),
+          .bind(sessionId, 'user', userMessage),
         this.env.DB
           .prepare('INSERT INTO TB_MESSAGE (session_id, role, content) VALUES (?, ?, ?)')
-          .bind(sessionId, 'assistant', assistantResponse)
-          .run(),
+          .bind(sessionId, 'assistant', assistantResponse),
         this.env.DB
           .prepare('UPDATE TB_SESSION SET updated_at = CURRENT_TIMESTAMP WHERE id = ?')
           .bind(sessionId)
-          .run()
       ]);
 
       console.log(`[ChatService] Messages saved to DB for session ${sessionId}`);
@@ -472,8 +467,13 @@ ${context}`;
       this.embeddingService.embed(message)
     ]);
 
-    // Vectorize에서 유사 콘텐츠 검색
-    const searchResults = await this.searchSimilarDocuments(queryEmbedding, 5, allowedContentIds, currentSessionId);
+    // 벡터 검색 + 퀴즈 컨텍스트 + 대화 내역을 모두 병렬 실행
+    const [searchResults, quizContext, chatHistory] = await Promise.all([
+      this.searchSimilarDocuments(queryEmbedding, 5, allowedContentIds, currentSessionId),
+      this.getQuizContext(allowedContentIds),
+      this.getChatHistory(currentSessionId, 6)
+    ]);
+    console.log('[ChatService] Chat history loaded:', chatHistory.length, 'messages');
 
     // 컨텍스트 구성
     let context = '';
@@ -487,14 +487,7 @@ ${context}`;
     } else {
       context = await this.buildContext(searchResults);
     }
-
-    // 퀴즈 컨텍스트 + 대화 내역을 병렬 조회
-    const [quizContext, chatHistory] = await Promise.all([
-      this.getQuizContext(allowedContentIds),
-      this.getChatHistory(currentSessionId, 6)
-    ]);
     if (quizContext) context += quizContext;
-    console.log('[ChatService] Chat history loaded:', chatHistory.length, 'messages');
 
     // LLM 메시지 배열 구성
     const systemPrompt = `${this.persona}
