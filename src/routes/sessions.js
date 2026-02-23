@@ -29,9 +29,9 @@ sessions.get('/', async (c) => {
     const limit = Math.min(100, Math.max(1, parseInt(c.req.query('limit') || '50')));
     const offset = (page - 1) * limit;
 
-    // 전체 개수 조회 (status = 1만)
+    // 전체 개수 조회 (부모 세션만, status = 1)
     const countResult = await c.env.DB
-      .prepare('SELECT COUNT(*) as total FROM TB_SESSION WHERE status = 1')
+      .prepare('SELECT COUNT(*) as total FROM TB_SESSION WHERE status = 1 AND parent_id = 0')
       .first();
     const total = countResult?.total || 0;
 
@@ -47,7 +47,7 @@ sessions.get('/', async (c) => {
           (SELECT content FROM TB_MESSAGE WHERE session_id = s.id AND status = 1 ORDER BY created_at DESC LIMIT 1) as lastMessage,
           (SELECT COUNT(*) FROM TB_MESSAGE WHERE session_id = s.id AND status = 1) as messageCount
         FROM TB_SESSION s
-        WHERE s.status = 1
+        WHERE s.status = 1 AND s.parent_id = 0
         ORDER BY s.updated_at DESC
         LIMIT ? OFFSET ?
       `)
@@ -120,6 +120,7 @@ sessions.post('/', async (c) => {
     let lessonId = null;
     let contentIds = [];
     let settings = {};
+    let parentId = 0;
 
     try {
       const body = await c.req.json();
@@ -129,9 +130,171 @@ sessions.post('/', async (c) => {
       lessonId = body.lesson_id || null;
       contentIds = Array.isArray(body.content_ids) ? body.content_ids : [];
       settings = body.settings || {};
+      parentId = body.parent_id || 0;
     } catch {
       // JSON 파싱 실패
     }
+
+    // ── 자식 세션 생성 (parent_id > 0) ──
+    if (parentId > 0) {
+      // 부모 세션 존재 확인
+      const parentSession = await c.env.DB
+        .prepare('SELECT * FROM TB_SESSION WHERE id = ? AND status = 1 AND parent_id = 0')
+        .bind(parentId)
+        .first();
+
+      if (!parentSession) {
+        return c.json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: '부모 세션을 찾을 수 없습니다.' }
+        }, 404);
+      }
+
+      // 동일 부모 + 수강생 자식 존재 확인
+      if (courseUserId) {
+        const existingChild = await c.env.DB
+          .prepare('SELECT id FROM TB_SESSION WHERE parent_id = ? AND course_user_id = ? AND status = 1')
+          .bind(parentId, courseUserId)
+          .first();
+
+        if (existingChild) {
+          // 기존 자식 세션 반환
+          const childSession = await c.env.DB
+            .prepare('SELECT * FROM TB_SESSION WHERE id = ? AND status = 1')
+            .bind(existingChild.id)
+            .first();
+
+          const { results: messages } = await c.env.DB
+            .prepare('SELECT id, role, content, created_at FROM TB_MESSAGE WHERE session_id = ? AND status = 1 ORDER BY created_at ASC')
+            .bind(existingChild.id)
+            .all();
+
+          const { results: linkedContents } = await c.env.DB
+            .prepare(`
+              SELECT c.id, c.content_nm
+              FROM TB_SESSION_CONTENT sc
+              JOIN TB_CONTENT c ON sc.content_id = c.id AND c.status = 1
+              WHERE sc.session_id = ? AND sc.status = 1
+            `)
+            .bind(parentId)
+            .all();
+
+          let learningSummary = null;
+          if (parentSession.learning_summary) {
+            try { learningSummary = JSON.parse(parentSession.learning_summary); } catch {}
+          }
+          let recommendedQuestions = [];
+          if (parentSession.recommended_questions) {
+            try { recommendedQuestions = JSON.parse(parentSession.recommended_questions); } catch {}
+          }
+
+          return c.json({
+            success: true,
+            data: {
+              session: { id: existingChild.id, parentId },
+              id: existingChild.id,
+              parentId,
+              userId: childSession.user_id,
+              title: parentSession.session_nm || '새 대화',
+              settings: {
+                persona: childSession.persona,
+                temperature: childSession.temperature,
+                topP: childSession.top_p,
+                maxTokens: childSession.max_tokens,
+                summaryCount: childSession.summary_count,
+                recommendCount: childSession.recommend_count,
+                quizCount: childSession.quiz_count
+              },
+              learning: {
+                goal: parentSession.learning_goal || null,
+                summary: learningSummary,
+                recommendedQuestions
+              },
+              contents: linkedContents || [],
+              messages: messages || [],
+              messageCount: (messages || []).length,
+              created_at: childSession.created_at,
+              updated_at: childSession.updated_at
+            }
+          }, 200);
+        }
+      }
+
+      // 새 자식 세션 생성 (부모 설정 복사, AI 생성 없음)
+      const insertResult = await c.env.DB
+        .prepare(`
+          INSERT INTO TB_SESSION (parent_id, course_id, course_user_id, lesson_id, user_id,
+            persona, temperature, top_p, max_tokens, summary_count, recommend_count, quiz_count)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .bind(
+          parentId, courseId, courseUserId, lessonId, userId,
+          parentSession.persona,
+          parentSession.temperature,
+          parentSession.top_p,
+          parentSession.max_tokens,
+          parentSession.summary_count,
+          parentSession.recommend_count,
+          parentSession.quiz_count
+        )
+        .run();
+
+      const childSessionId = insertResult.meta.last_row_id;
+
+      // 부모의 콘텐츠 목록 조회
+      const { results: linkedContents } = await c.env.DB
+        .prepare(`
+          SELECT c.id, c.content_nm
+          FROM TB_SESSION_CONTENT sc
+          JOIN TB_CONTENT c ON sc.content_id = c.id AND c.status = 1
+          WHERE sc.session_id = ? AND sc.status = 1
+        `)
+        .bind(parentId)
+        .all();
+
+      // 부모 학습 데이터 파싱
+      let learningSummary = null;
+      if (parentSession.learning_summary) {
+        try { learningSummary = JSON.parse(parentSession.learning_summary); } catch {}
+      }
+      let recommendedQuestions = [];
+      if (parentSession.recommended_questions) {
+        try { recommendedQuestions = JSON.parse(parentSession.recommended_questions); } catch {}
+      }
+
+      return c.json({
+        success: true,
+        data: {
+          session: { id: childSessionId, parentId },
+          id: childSessionId,
+          parentId,
+          userId,
+          title: parentSession.session_nm || '새 대화',
+          settings: {
+            persona: parentSession.persona,
+            temperature: parentSession.temperature,
+            topP: parentSession.top_p,
+            maxTokens: parentSession.max_tokens,
+            summaryCount: parentSession.summary_count,
+            recommendCount: parentSession.recommend_count,
+            quizCount: parentSession.quiz_count
+          },
+          learning: {
+            goal: parentSession.learning_goal || null,
+            summary: learningSummary,
+            recommendedQuestions
+          },
+          contents: linkedContents || [],
+          messages: [],
+          messageCount: 0,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        },
+        message: '자식 세션이 생성되었습니다.'
+      }, 201);
+    }
+
+    // ── 부모 세션 생성 (기존 로직) ──
 
     // 학습 자료 필수 검증
     if (contentIds.length === 0) {
@@ -147,10 +310,11 @@ sessions.post('/', async (c) => {
     // 세션 생성 (AI 설정 포함)
     const insertResult = await c.env.DB
       .prepare(`
-        INSERT INTO TB_SESSION (course_id, course_user_id, lesson_id, user_id, persona, temperature, top_p, max_tokens, summary_count, recommend_count, quiz_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO TB_SESSION (parent_id, course_id, course_user_id, lesson_id, user_id, persona, temperature, top_p, max_tokens, summary_count, recommend_count, quiz_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .bind(
+        0,
         courseId,
         courseUserId,
         lessonId,
@@ -201,7 +365,9 @@ sessions.post('/', async (c) => {
     return c.json({
       success: true,
       data: {
+        session: { id: sessionId, parentId: 0 },
         id: sessionId,
+        parentId: 0,
         userId: session.user_id,
         title: learningData.sessionNm || '새 대화',
         settings: {
@@ -219,6 +385,7 @@ sessions.post('/', async (c) => {
           recommendedQuestions: learningData.recommendedQuestions
         },
         contents: linkedContents || [],
+        messages: [],
         lastMessage: null,
         messageCount: 0,
         created_at: session.created_at,
@@ -274,7 +441,23 @@ sessions.get('/:id', async (c) => {
       }, 404);
     }
 
-    // 메시지 조회 (status = 1만)
+    // 자식 세션이면 부모의 콘텐츠/학습데이터 사용
+    const isChild = session.parent_id > 0;
+    let sourceSession = session;
+    let contentSourceId = id;
+
+    if (isChild) {
+      const parentSession = await c.env.DB
+        .prepare('SELECT * FROM TB_SESSION WHERE id = ? AND status = 1')
+        .bind(session.parent_id)
+        .first();
+      if (parentSession) {
+        sourceSession = parentSession;
+        contentSourceId = session.parent_id;
+      }
+    }
+
+    // 메시지 조회 (자식 세션 자체의 채팅 기록)
     const { results: messages } = await c.env.DB
       .prepare(`
         SELECT id, role, content, created_at
@@ -285,7 +468,7 @@ sessions.get('/:id', async (c) => {
       .bind(id)
       .all();
 
-    // 연결된 콘텐츠 조회
+    // 연결된 콘텐츠 조회 (부모 또는 자기 자신)
     const { results: linkedContents } = await c.env.DB
       .prepare(`
         SELECT c.id, c.content_nm
@@ -293,11 +476,11 @@ sessions.get('/:id', async (c) => {
         JOIN TB_CONTENT c ON sc.content_id = c.id AND c.status = 1
         WHERE sc.session_id = ? AND sc.status = 1
       `)
-      .bind(id)
+      .bind(contentSourceId)
       .all();
 
-    // 제목: DB에 저장된 제목 사용, 없으면 첫 메시지 기반 생성
-    let title = session.session_nm;
+    // 제목: 부모 세션 제목 우선, 없으면 첫 메시지 기반 생성
+    let title = sourceSession.session_nm;
     if (!title) {
       const firstUserMessage = (messages || []).find(m => m.role === 'user');
       title = firstUserMessage
@@ -305,21 +488,21 @@ sessions.get('/:id', async (c) => {
         : '새 대화';
     }
 
-    // 학습 요약 파싱 (배열 형태로 저장됨)
+    // 학습 요약 파싱 (부모의 데이터 사용)
     let learningSummary = null;
-    if (session.learning_summary) {
+    if (sourceSession.learning_summary) {
       try {
-        learningSummary = JSON.parse(session.learning_summary);
+        learningSummary = JSON.parse(sourceSession.learning_summary);
       } catch {
-        learningSummary = session.learning_summary; // 파싱 실패시 문자열 그대로
+        learningSummary = sourceSession.learning_summary;
       }
     }
 
-    // 추천 질문 파싱
+    // 추천 질문 파싱 (부모의 데이터 사용)
     let recommendedQuestions = [];
-    if (session.recommended_questions) {
+    if (sourceSession.recommended_questions) {
       try {
-        recommendedQuestions = JSON.parse(session.recommended_questions);
+        recommendedQuestions = JSON.parse(sourceSession.recommended_questions);
       } catch {
         recommendedQuestions = [];
       }
@@ -329,6 +512,7 @@ sessions.get('/:id', async (c) => {
       success: true,
       data: {
         id: session.id,
+        parentId: session.parent_id,
         userId: session.user_id,
         title,
         settings: {
@@ -341,7 +525,7 @@ sessions.get('/:id', async (c) => {
           quizCount: session.quiz_count
         },
         learning: {
-          goal: session.learning_goal || null,
+          goal: sourceSession.learning_goal || null,
           summary: learningSummary,
           recommendedQuestions: recommendedQuestions
         },
@@ -497,7 +681,7 @@ sessions.get('/:id/quizzes', async (c) => {
 
     // 세션 존재 확인 (status = 1만)
     const session = await c.env.DB
-      .prepare('SELECT id, quiz_count FROM TB_SESSION WHERE id = ? AND status = 1')
+      .prepare('SELECT id, parent_id, quiz_count FROM TB_SESSION WHERE id = ? AND status = 1')
       .bind(id)
       .first();
 
@@ -511,6 +695,9 @@ sessions.get('/:id/quizzes', async (c) => {
       }, 404);
     }
 
+    // 자식 세션이면 부모의 콘텐츠로 퀴즈 조회
+    const contentSourceId = session.parent_id > 0 ? session.parent_id : id;
+
     // 세션에 연결된 콘텐츠 ID 조회
     const { results: contents } = await c.env.DB
       .prepare(`
@@ -518,7 +705,7 @@ sessions.get('/:id/quizzes', async (c) => {
         FROM TB_SESSION_CONTENT
         WHERE session_id = ? AND status = 1
       `)
-      .bind(id)
+      .bind(contentSourceId)
       .all();
 
     const contentIds = (contents || []).map(c => c.content_id);
@@ -596,6 +783,9 @@ sessions.post('/:id/quizzes', async (c) => {
       }, 404);
     }
 
+    // 자식 세션이면 부모의 콘텐츠로 퀴즈 재생성
+    const contentSourceId = session.parent_id > 0 ? session.parent_id : id;
+
     // 연결된 콘텐츠 조회 (content 포함)
     const { results: contents } = await c.env.DB
       .prepare(`
@@ -604,7 +794,7 @@ sessions.post('/:id/quizzes', async (c) => {
         JOIN TB_SESSION_CONTENT sc ON c.id = sc.content_id
         WHERE sc.session_id = ? AND sc.status = 1 AND c.status = 1
       `)
-      .bind(id)
+      .bind(contentSourceId)
       .all();
 
     if (!contents || contents.length === 0) {
@@ -701,7 +891,7 @@ sessions.delete('/:id', async (c) => {
 
     // 세션 존재 확인 (status = 1만)
     const session = await c.env.DB
-      .prepare('SELECT id FROM TB_SESSION WHERE id = ? AND status = 1')
+      .prepare('SELECT id, parent_id FROM TB_SESSION WHERE id = ? AND status = 1')
       .bind(id)
       .first();
 
@@ -713,6 +903,25 @@ sessions.delete('/:id', async (c) => {
           message: '세션을 찾을 수 없습니다.'
         }
       }, 404);
+    }
+
+    // 부모 세션 삭제 시 자식 세션도 연쇄 삭제
+    if (session.parent_id === 0) {
+      const { results: children } = await c.env.DB
+        .prepare('SELECT id FROM TB_SESSION WHERE parent_id = ? AND status = 1')
+        .bind(id)
+        .all();
+
+      for (const child of (children || [])) {
+        await c.env.DB
+          .prepare('UPDATE TB_MESSAGE SET status = -1 WHERE session_id = ?')
+          .bind(child.id)
+          .run();
+        await c.env.DB
+          .prepare('UPDATE TB_SESSION SET status = -1, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .bind(child.id)
+          .run();
+      }
     }
 
     // 메시지 soft delete (status = -1)

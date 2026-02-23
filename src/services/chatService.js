@@ -66,27 +66,38 @@ export class ChatService {
   }
 
   /**
-   * 세션에 연결된 콘텐츠 ID 목록 조회
+   * 세션에 연결된 콘텐츠 ID 목록 + 유효 세션 ID 조회
+   * 자식 세션인 경우 부모의 콘텐츠와 부모 세션 ID를 반환
    * @param {number} sessionId - 세션 ID
-   * @returns {Promise<number[]>} - 콘텐츠 ID 배열 (빈 배열이면 전체 검색)
+   * @returns {Promise<{contentIds: number[], effectiveSessionId: number}>}
    */
-  async getSessionContentIds(sessionId) {
-    if (!sessionId) return [];
+  async getSessionContentIdsAndParent(sessionId) {
+    if (!sessionId) return { contentIds: [], effectiveSessionId: sessionId };
 
     try {
+      const session = await this.env.DB
+        .prepare('SELECT parent_id FROM TB_SESSION WHERE id = ? AND status = 1')
+        .bind(sessionId)
+        .first();
+
+      const effectiveSessionId = (session && session.parent_id > 0) ? session.parent_id : sessionId;
+
       const { results } = await this.env.DB
         .prepare(`
           SELECT content_id
           FROM TB_SESSION_CONTENT
           WHERE session_id = ? AND status = 1
         `)
-        .bind(sessionId)
+        .bind(effectiveSessionId)
         .all();
 
-      return (results || []).map(r => r.content_id);
+      return {
+        contentIds: (results || []).map(r => r.content_id),
+        effectiveSessionId
+      };
     } catch (error) {
       console.error('Get session content IDs error:', error);
-      return [];
+      return { contentIds: [], effectiveSessionId: sessionId };
     }
   }
 
@@ -112,14 +123,16 @@ export class ChatService {
     const currentSessionId = sessionId;
 
     // 1. 콘텐츠 ID 조회 + 질문 임베딩을 병렬 실행
-    const [allowedContentIds, queryEmbedding] = await Promise.all([
-      this.getSessionContentIds(currentSessionId),
+    const [contentResult, queryEmbedding] = await Promise.all([
+      this.getSessionContentIdsAndParent(currentSessionId),
       this.embeddingService.embed(message)
     ]);
+    const allowedContentIds = contentResult.contentIds;
+    const effectiveSessionId = contentResult.effectiveSessionId;
 
     // 2. 벡터 검색 + 대화 내역을 병렬 실행
     const [searchResults, chatHistory] = await Promise.all([
-      this.searchSimilarDocuments(queryEmbedding, 5, allowedContentIds, currentSessionId),
+      this.searchSimilarDocuments(queryEmbedding, 5, allowedContentIds, effectiveSessionId),
       this.getChatHistory(currentSessionId, 6)
     ]);
     console.log('[ChatService] Chat history loaded:', chatHistory.length, 'messages');
@@ -290,17 +303,27 @@ export class ChatService {
     try {
       const contextParts = [];
 
-      // 세션의 학습 데이터 조회
+      // 세션 조회 (parent_id 확인)
       const session = await this.env.DB
-        .prepare('SELECT learning_goal, learning_summary FROM TB_SESSION WHERE id = ? AND status = 1')
+        .prepare('SELECT parent_id, learning_goal, learning_summary FROM TB_SESSION WHERE id = ? AND status = 1')
         .bind(sessionId)
         .first();
 
-      if (session?.learning_goal) {
-        contextParts.push(`[학습 목표]\n${session.learning_goal}`);
+      // 자식 세션이면 부모의 학습 데이터 사용
+      let learningSource = session;
+      if (session && session.parent_id > 0) {
+        const parentSession = await this.env.DB
+          .prepare('SELECT learning_goal, learning_summary FROM TB_SESSION WHERE id = ? AND status = 1')
+          .bind(session.parent_id)
+          .first();
+        if (parentSession) learningSource = parentSession;
       }
-      if (session?.learning_summary) {
-        contextParts.push(`[학습 요약]\n${session.learning_summary}`);
+
+      if (learningSource?.learning_goal) {
+        contextParts.push(`[학습 목표]\n${learningSource.learning_goal}`);
+      }
+      if (learningSource?.learning_summary) {
+        contextParts.push(`[학습 요약]\n${learningSource.learning_summary}`);
       }
 
       // 연결된 콘텐츠 조회 (fallback이므로 앞부분 2000자만 사용)
@@ -461,16 +484,18 @@ ${context}`;
     const t0 = Date.now();
 
     // 병렬 처리: 콘텐츠 ID 조회 + 질문 임베딩 동시 실행
-    const [allowedContentIds, queryEmbedding] = await Promise.all([
-      this.getSessionContentIds(currentSessionId),
+    const [contentResult, queryEmbedding] = await Promise.all([
+      this.getSessionContentIdsAndParent(currentSessionId),
       this.embeddingService.embed(message)
     ]);
+    const allowedContentIds = contentResult.contentIds;
+    const effectiveSessionId = contentResult.effectiveSessionId;
     const t1 = Date.now();
     console.log(`[PERF] 1단계 콘텐츠ID+임베딩: ${t1 - t0}ms`);
 
     // 벡터 검색 + 대화 내역을 병렬 실행
     const [searchResults, chatHistory] = await Promise.all([
-      this.searchSimilarDocuments(queryEmbedding, 5, allowedContentIds, currentSessionId),
+      this.searchSimilarDocuments(queryEmbedding, 5, allowedContentIds, effectiveSessionId),
       this.getChatHistory(currentSessionId, 6)
     ]);
     const t2 = Date.now();

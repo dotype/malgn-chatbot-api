@@ -23,6 +23,7 @@ CREATE INDEX IF NOT EXISTS idx_content_status ON TB_CONTENT(status);
 -- TB_SESSION: 채팅 세션
 CREATE TABLE IF NOT EXISTS TB_SESSION (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  parent_id INTEGER DEFAULT 0,
   course_id INTEGER,
   course_user_id INTEGER,
   lesson_id INTEGER,
@@ -46,6 +47,8 @@ CREATE TABLE IF NOT EXISTS TB_SESSION (
 -- Index for session
 CREATE INDEX IF NOT EXISTS idx_session_status ON TB_SESSION(status);
 CREATE INDEX IF NOT EXISTS idx_session_user ON TB_SESSION(user_id);
+CREATE INDEX IF NOT EXISTS idx_session_parent_id ON TB_SESSION(parent_id);
+CREATE INDEX IF NOT EXISTS idx_session_parent_course_user ON TB_SESSION(parent_id, course_user_id);
 
 -- TB_MESSAGE: 채팅 메시지
 CREATE TABLE IF NOT EXISTS TB_MESSAGE (
