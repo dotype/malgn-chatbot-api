@@ -1,6 +1,6 @@
 # 환경 설정 가이드 (Setup Guide)
 
-이 문서는 AI 챗봇 프로젝트의 개발 환경을 설정하는 방법을 단계별로 설명합니다.
+이 문서는 Malgn Chatbot 프로젝트의 개발 환경을 설정하는 방법을 단계별로 설명합니다.
 
 ---
 
@@ -12,8 +12,9 @@
 4. [Backend 설정](#4-backend-설정)
 5. [Frontend 설정](#5-frontend-설정)
 6. [로컬 개발 실행](#6-로컬-개발-실행)
-7. [배포 방법](#7-배포-방법)
-8. [문제 해결](#8-문제-해결)
+7. [멀티테넌트 배포](#7-멀티테넌트-배포)
+8. [새 테넌트 추가](#8-새-테넌트-추가)
+9. [문제 해결](#9-문제-해결)
 
 ---
 
@@ -61,53 +62,9 @@ npm install -g wrangler
 
 # Cloudflare 로그인 (브라우저가 열림)
 wrangler login
-```
 
-### 2.3 Cloudflare 리소스 생성
-
-아래 명령어를 순서대로 실행합니다.
-
-#### D1 데이터베이스 생성
-
-```bash
-# 데이터베이스 생성
-wrangler d1 create chatbot-db
-
-# 출력 예시:
-# ✅ Successfully created DB 'chatbot-db'
-# database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-```
-
-**중요**: 출력된 `database_id`를 메모해 두세요!
-
-#### Vectorize 인덱스 생성
-
-```bash
-# 벡터 인덱스 생성
-wrangler vectorize create chatbot-docs --dimensions=768 --metric=cosine
-
-# 출력 예시:
-# ✅ Successfully created Vectorize index 'chatbot-docs'
-```
-
-#### KV 네임스페이스 생성
-
-```bash
-# KV 생성
-wrangler kv:namespace create "KV"
-
-# 출력 예시:
-# ✅ Successfully created KV namespace
-# id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-```
-
-**중요**: 출력된 `id`를 메모해 두세요!
-
-#### R2 버킷 생성 (선택적)
-
-```bash
-# R2 버킷 생성
-wrangler r2 bucket create chatbot-files
+# 로그인 확인
+wrangler whoami
 ```
 
 ---
@@ -118,11 +75,15 @@ wrangler r2 bucket create chatbot-files
 # 프로젝트 폴더로 이동
 cd ~/Projects
 
-# Backend 클론 (이미 있다면 생략)
+# Backend 클론
 git clone <your-repo-url> malgn-chatbot-api
 
-# Frontend 폴더 생성 (이미 있다면 생략)
-mkdir malgn-chatbot
+# Frontend 클론
+git clone <your-repo-url> malgn-chatbot
+
+# 테넌트별 프론트엔드 (선택)
+git clone <your-repo-url> malgn-chatbot-user1
+git clone <your-repo-url> malgn-chatbot-user2
 ```
 
 ---
@@ -132,85 +93,146 @@ mkdir malgn-chatbot
 ### 4.1 의존성 설치
 
 ```bash
-cd malgn-chatbot-api
+cd ~/Projects/malgn-chatbot-api
 npm install
 ```
 
-### 4.2 wrangler.toml 설정
+**설치되는 주요 패키지**:
+- `hono` — 웹 프레임워크
+- `@hono/swagger-ui` — Swagger UI 통합
+- `jose` — JWT 처리 (선택적)
+- `pdf-parse` — PDF 파싱
+- `unpdf` — PDF 텍스트 추출
 
-`wrangler.toml` 파일을 열고 메모해둔 ID들을 입력합니다.
+### 4.2 wrangler.toml 확인
+
+`wrangler.toml` 파일에 이미 멀티테넌트 설정이 되어 있습니다.
 
 ```toml
 name = "malgn-chatbot-api"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "development"
+TENANT_ID = "dev"
 
-# Workers AI (자동 활성화)
 [ai]
 binding = "AI"
+gateway = { id = "malgn-chatbot", cache_ttl = 3600 }
 
-# Vectorize
-[[vectorize]]
-binding = "VECTORIZE"
-index_name = "chatbot-docs"
-
-# D1 Database
 [[d1_databases]]
 binding = "DB"
-database_name = "chatbot-db"
-database_id = "여기에-database_id-입력"  # 메모한 값 입력
+database_name = "malgn-chatbot-db"
+database_id = "your-database-id"
 
-# KV Namespace
 [[kv_namespaces]]
 binding = "KV"
-id = "여기에-kv-id-입력"  # 메모한 값 입력
+id = "your-kv-id"
 
-# R2 Bucket (선택적)
 [[r2_buckets]]
 binding = "BUCKET"
-bucket_name = "chatbot-files"
+bucket_name = "malgn-chatbot-files"
+
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "malgn-chatbot-vectors"
 ```
 
-### 4.3 D1 스키마 적용
+### 4.3 Cloudflare 리소스 생성 (신규 환경)
+
+기존 리소스를 사용하지 않는 경우에만 실행합니다.
 
 ```bash
-# 로컬 개발용 스키마 적용
-wrangler d1 execute chatbot-db --local --file=./schema.sql
+# D1 데이터베이스 생성
+wrangler d1 create malgn-chatbot-db
+# → database_id 메모
 
-# 원격 DB에도 적용 (배포 시)
-wrangler d1 execute chatbot-db --file=./schema.sql
+# Vectorize 인덱스 생성 (768차원, 코사인 유사도)
+wrangler vectorize create malgn-chatbot-vectors --dimensions=768 --metric=cosine
+
+# KV 네임스페이스 생성
+wrangler kv namespace create malgn-chatbot-kv
+# → id 메모
+
+# R2 버킷 생성
+wrangler r2 bucket create malgn-chatbot-files
 ```
 
-### 4.4 환경 변수 설정
+메모한 ID를 `wrangler.toml`에 입력합니다.
 
-`.dev.vars` 파일을 생성합니다 (git에 커밋하지 마세요!):
+### 4.4 D1 스키마 적용
+
+```bash
+# 전체 스키마 적용 (신규 DB)
+wrangler d1 execute malgn-chatbot-db --file=./schema.sql
+
+# 개별 마이그레이션 (기존 DB 업데이트 시)
+wrangler d1 execute malgn-chatbot-db --file=./migrations/001_quiz_content_based.sql
+wrangler d1 execute malgn-chatbot-db --file=./migrations/002_session_course_fields.sql
+wrangler d1 execute malgn-chatbot-db --file=./migrations/003_session_parent_id.sql
+```
+
+### 4.5 환경 변수 설정
+
+`.dev.vars` 파일을 생성합니다 (Git에 커밋하지 마세요):
 
 ```bash
 # .dev.vars 생성
 cat > .dev.vars << 'EOF'
-ENVIRONMENT=development
+API_KEY=your-dev-api-key-here
 EOF
+```
+
+프로덕션 시크릿 설정:
+
+```bash
+# 테넌트별 API Key 설정
+wrangler secret put API_KEY --env user1
+wrangler secret put API_KEY --env user2
 ```
 
 ---
 
 ## 5. Frontend 설정
 
-### 5.1 기본 파일 생성
-
-Frontend 폴더에 필요한 파일들을 생성합니다.
+### 5.1 의존성 설치
 
 ```bash
 cd ~/Projects/malgn-chatbot
-
-# 폴더 구조 생성
-mkdir -p css js docs
+npm install
 ```
 
-(Frontend 파일들은 Phase 3에서 자동 생성됩니다)
+### 5.2 임베드 위젯 빌드
+
+```bash
+# ES6 모듈 → IIFE 번들링
+npm run build
+# 결과: js/embed/*.js → js/chatbot-embed.js
+```
+
+### 5.3 프론트엔드 구조
+
+```
+malgn-chatbot/
+├── index.html          # 관리자 대시보드
+├── package.json        # esbuild 빌드 설정
+├── css/
+│   ├── style.css       # 대시보드 스타일
+│   └── chatbot.css     # 임베드 위젯 스타일
+├── js/
+│   ├── app.js          # 메인 오케스트레이터
+│   ├── api.js          # API 클라이언트
+│   ├── chat.js         # 채팅 UI
+│   ├── contents.js     # 콘텐츠 관리
+│   ├── sessions.js     # 세션 관리
+│   ├── settings.js     # AI 설정
+│   ├── tenants.js      # 테넌트 전환
+│   ├── chatbot-embed.js # 빌드된 임베드 위젯
+│   └── embed/          # 위젯 소스 (ES6)
+└── docs/               # 문서
+```
 
 ---
 
@@ -231,11 +253,15 @@ npm run dev
 
 **테스트:**
 ```bash
-# 새 터미널에서
+# 헬스체크 (인증 불필요)
 curl http://localhost:8787/health
 
-# 기대 출력:
-# {"status":"healthy","timestamp":"..."}
+# Swagger UI 확인
+open http://localhost:8787/docs
+
+# API 호출 테스트 (인증 필요)
+curl -H "Authorization: Bearer your-dev-api-key-here" \
+  http://localhost:8787/contents
 ```
 
 ### Frontend 실행
@@ -249,95 +275,161 @@ npx wrangler pages dev . --port 8788
 # 브라우저에서 http://localhost:8788 접속
 ```
 
+### 환경별 URL
+
+| 환경 | Frontend | Backend | Swagger |
+|------|----------|---------|---------|
+| 로컬 개발 | `localhost:8788` | `localhost:8787` | `localhost:8787/docs` |
+| user1 (프로덕션) | `malgn-chatbot.pages.dev` | `malgn-chatbot-api-user1.workers.dev` | `/docs` |
+| user2 (프로덕션) | `malgn-chatbot-user2.pages.dev` | `malgn-chatbot-api-user2.workers.dev` | `/docs` |
+
 ---
 
-## 7. 배포 방법
+## 7. 멀티테넌트 배포
 
-### Backend 배포
+### Backend 배포 (테넌트별)
 
 ```bash
 cd ~/Projects/malgn-chatbot-api
 
-# Production 배포
-wrangler deploy
+# user1 테넌트 배포
+wrangler deploy --env user1
 
-# 또는 특정 환경으로 배포
-wrangler deploy --env production
+# user2 테넌트 배포
+wrangler deploy --env user2
 ```
 
-배포 후 URL이 출력됩니다:
-```
-Published malgn-chatbot-api (x.xx sec)
-https://malgn-chatbot-api.your-subdomain.workers.dev
-```
-
-### Frontend 배포
+### Frontend 배포 (Cloudflare Pages)
 
 ```bash
 cd ~/Projects/malgn-chatbot
 
-# Pages에 배포
-npx wrangler pages deploy .
+# 임베드 위젯 빌드 (배포 전 필수)
+npm run build
 
-# 첫 배포 시 프로젝트 이름 입력
-# 예: malgn-chatbot
+# Pages 배포 (한국어 커밋 메시지 오류 방지를 위해 영문 메시지 지정)
+wrangler pages deploy . --project-name=malgn-chatbot --commit-dirty=true --commit-message="deploy"
 ```
 
-배포 후 URL:
-```
-https://malgn-chatbot.pages.dev
-```
+### D1 마이그레이션 (테넌트별)
 
-### 환경별 API URL 설정
+```bash
+# user1 (dev와 DB 공유이므로 별도 불필요)
 
-Frontend의 `js/api.js`에서 API URL을 환경에 맞게 설정해야 합니다:
-
-```javascript
-// 개발 환경
-const API_BASE_URL = 'http://localhost:8787';
-
-// 운영 환경 (배포 시 변경)
-// const API_BASE_URL = 'https://malgn-chatbot-api.your-subdomain.workers.dev';
+# user2 (독립 DB)
+wrangler d1 execute malgn-chatbot-db-user2 --file=./schema.sql --env user2
+# 또는 개별 마이그레이션
+wrangler d1 execute malgn-chatbot-db-user2 --file=./migrations/003_session_parent_id.sql --env user2
 ```
 
 ---
 
-## 8. 문제 해결
+## 8. 새 테넌트 추가
+
+### 8.1 Cloudflare 리소스 생성
+
+```bash
+# <tenant_id>를 실제 테넌트 ID로 치환
+
+# D1 데이터베이스
+wrangler d1 create malgn-chatbot-db-<tenant_id>
+
+# KV 네임스페이스
+wrangler kv namespace create malgn-chatbot-kv-<tenant_id>
+
+# R2 버킷
+wrangler r2 bucket create malgn-chatbot-files-<tenant_id>
+
+# Vectorize 인덱스
+wrangler vectorize create malgn-chatbot-vectors-<tenant_id> --dimensions=768 --metric=cosine
+```
+
+### 8.2 wrangler.toml에 환경 섹션 추가
+
+```toml
+[env.<tenant_id>]
+name = "malgn-chatbot-api-<tenant_id>"
+vars = { ENVIRONMENT = "production", TENANT_ID = "<tenant_id>" }
+
+[env.<tenant_id>.ai]
+binding = "AI"
+gateway = { id = "malgn-chatbot", cache_ttl = 3600 }
+
+[[env.<tenant_id>.d1_databases]]
+binding = "DB"
+database_name = "malgn-chatbot-db-<tenant_id>"
+database_id = "생성된-database-id"
+
+[[env.<tenant_id>.kv_namespaces]]
+binding = "KV"
+id = "생성된-kv-id"
+
+[[env.<tenant_id>.r2_buckets]]
+binding = "BUCKET"
+bucket_name = "malgn-chatbot-files-<tenant_id>"
+
+[[env.<tenant_id>.vectorize]]
+binding = "VECTORIZE"
+index_name = "malgn-chatbot-vectors-<tenant_id>"
+```
+
+### 8.3 스키마 적용
+
+```bash
+wrangler d1 execute malgn-chatbot-db-<tenant_id> --file=./schema.sql
+```
+
+### 8.4 시크릿 설정
+
+```bash
+wrangler secret put API_KEY --env <tenant_id>
+```
+
+### 8.5 배포
+
+```bash
+wrangler deploy --env <tenant_id>
+```
+
+---
+
+## 9. 문제 해결
 
 ### 자주 발생하는 오류
 
-#### 1. "Wrangler not found"
+#### 1. "Unauthorized" (401)
 
 ```bash
-# 해결: Wrangler 재설치
-npm install -g wrangler
+# API_KEY가 올바른지 확인
+# .dev.vars 파일 확인 (로컬)
+cat .dev.vars
 
-# PATH 확인
-which wrangler
+# 요청 시 Bearer 토큰 포함 필수
+curl -H "Authorization: Bearer YOUR_API_KEY" http://localhost:8787/contents
 ```
 
 #### 2. "D1 database not found"
 
 ```bash
-# 해결: 데이터베이스 목록 확인
+# 데이터베이스 목록 확인
 wrangler d1 list
 
-# wrangler.toml의 database_id가 맞는지 확인
+# wrangler.toml의 database_id 확인
 ```
 
 #### 3. "Vectorize index not found"
 
 ```bash
-# 해결: 인덱스 목록 확인
+# 인덱스 목록 확인
 wrangler vectorize list
 
-# 없으면 다시 생성
-wrangler vectorize create chatbot-docs --dimensions=768 --metric=cosine
+# 없으면 생성 (768차원, 코사인)
+wrangler vectorize create malgn-chatbot-vectors --dimensions=768 --metric=cosine
 ```
 
 #### 4. "CORS 에러" (브라우저에서)
 
-Backend의 `src/index.js`에서 CORS 설정 확인:
+Hono의 CORS 미들웨어가 이미 설정되어 있습니다. `src/index.js`에서 확인:
 
 ```javascript
 import { cors } from 'hono/cors';
@@ -346,16 +438,23 @@ app.use('*', cors());
 
 #### 5. "AI binding error"
 
-Workers AI는 유료 플랜에서만 완전히 사용 가능합니다.
-무료 플랜에서는 일일 사용량 제한이 있습니다.
+Workers AI는 Cloudflare 유료 플랜에서 더 많은 사용량을 제공합니다.
+AI Gateway 설정이 `wrangler.toml`에 있는지 확인하세요.
+
+#### 6. Cloudflare Pages 한국어 커밋 오류
+
+```bash
+# --commit-message 플래그로 영문 메시지 지정
+wrangler pages deploy . --project-name=malgn-chatbot --commit-dirty=true --commit-message="deploy"
+```
 
 ### 로그 확인
 
 ```bash
-# 실시간 로그 확인 (배포된 Worker)
-wrangler tail
+# 배포된 Worker 실시간 로그
+wrangler tail --env user1
 
-# 로컬 개발 시에는 터미널에 로그 출력됨
+# 로컬 개발 시에는 터미널에 로그 자동 출력
 ```
 
 ### 유용한 명령어
@@ -368,38 +467,34 @@ wrangler --version
 wrangler whoami
 
 # D1 데이터 조회
-wrangler d1 execute chatbot-db --local --command="SELECT * FROM documents"
+wrangler d1 execute malgn-chatbot-db --command="SELECT COUNT(*) FROM TB_CONTENT WHERE status = 1"
 
-# KV 데이터 조회
-wrangler kv:key list --binding=KV
+# D1 원격 DB 조회
+wrangler d1 execute malgn-chatbot-db --command="SELECT * FROM TB_SESSION WHERE status = 1" --remote
 ```
 
 ---
 
 ## 체크리스트
 
-배포 전 확인사항:
-
+### 초기 설정
 - [ ] Node.js 18+ 설치됨
 - [ ] Wrangler CLI 설치됨
 - [ ] Cloudflare 로그인 완료
 - [ ] D1 데이터베이스 생성됨
-- [ ] Vectorize 인덱스 생성됨
+- [ ] Vectorize 인덱스 생성됨 (768차원, cosine)
 - [ ] KV 네임스페이스 생성됨
-- [ ] wrangler.toml에 ID들 입력됨
+- [ ] wrangler.toml에 리소스 ID 입력됨
 - [ ] schema.sql 실행됨
+- [ ] .dev.vars에 API_KEY 설정됨
 - [ ] npm install 완료
-- [ ] 로컬에서 테스트 완료
+- [ ] 로컬에서 `/health` 테스트 완료
 
----
-
-## 다음 단계
-
-모든 설정이 완료되면:
-1. Backend 개발 서버 실행 (`npm run dev`)
-2. Frontend 개발 서버 실행
-3. 문서 업로드 테스트
-4. 채팅 기능 테스트
+### 배포 전
+- [ ] 임베드 위젯 빌드 (`npm run build`)
+- [ ] 테넌트별 API_KEY 시크릿 설정됨
+- [ ] 테넌트별 D1 마이그레이션 적용됨
+- [ ] `wrangler deploy --env <tenant_id>` 성공
 
 ---
 
@@ -410,3 +505,5 @@ wrangler kv:key list --binding=KV
 - [D1 문서](https://developers.cloudflare.com/d1/)
 - [Vectorize 문서](https://developers.cloudflare.com/vectorize/)
 - [Workers AI 문서](https://developers.cloudflare.com/workers-ai/)
+- [AI Gateway 문서](https://developers.cloudflare.com/ai-gateway/)
+- [Hono 공식 문서](https://hono.dev/)
