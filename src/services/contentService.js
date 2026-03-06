@@ -37,15 +37,14 @@ export class ContentService {
     const whereClause = conditions.join(' AND ');
 
     // 전체 개수 조회
-    const countResult = await this.env.DB.prepare(`SELECT COUNT(*) as total FROM TB_CONTENT WHERE ${whereClause}`).bind(...params).first();
+    const countStmt = this.env.DB.prepare(`SELECT COUNT(*) as total FROM TB_CONTENT WHERE ${whereClause}`);
+    const countResult = params.length > 0 ? await countStmt.bind(...params).first() : await countStmt.first();
     const total = countResult?.total || 0;
 
     // 콘텐츠 목록 조회
-    const { results } = await this.env.DB
-      .prepare(`SELECT id, content_nm, filename, file_type, file_size, lesson_id, status, created_at
-         FROM TB_CONTENT WHERE ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
-      .bind(...params, limit, offset)
-      .all();
+    const listStmt = this.env.DB.prepare(`SELECT id, content_nm, filename, file_type, file_size, lesson_id, status, created_at
+         FROM TB_CONTENT WHERE ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`);
+    const { results } = await listStmt.bind(...params, limit, offset).all();
 
     return {
       contents: results || [],
