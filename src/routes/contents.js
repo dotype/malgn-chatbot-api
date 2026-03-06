@@ -2,7 +2,7 @@
  * Contents Routes
  *
  * 콘텐츠 관리 API 엔드포인트
- * GET /contents - 콘텐츠 목록 조회 (?lesson_id 필터 지원)
+ * GET /contents - 콘텐츠 목록 조회 (?lesson_id, ?file_type 필터 지원)
  * POST /contents - 콘텐츠 등록 (텍스트, 파일, 링크)
  * GET /contents/:id - 콘텐츠 상세 조회
  * DELETE /contents/:id - 콘텐츠 삭제
@@ -25,6 +25,7 @@ const contents = new Hono();
  * - page: 페이지 번호 (기본값: 1)
  * - limit: 페이지당 개수 (기본값: 20, 최대: 100)
  * - lesson_id: LMS 차시 ID 필터 (선택)
+ * - file_type: 파일 유형 필터 (선택, 예: pdf, txt, md, srt, vtt, text, link)
  */
 contents.get('/', async (c) => {
   try {
@@ -32,9 +33,10 @@ contents.get('/', async (c) => {
     const limit = Math.min(100, Math.max(1, parseInt(c.req.query('limit') || '20')));
     const lessonIdParam = c.req.query('lesson_id');
     const lessonId = lessonIdParam ? parseInt(lessonIdParam, 10) : null;
+    const fileType = c.req.query('file_type') || null;
 
     const contentService = new ContentService(c.env);
-    const result = await contentService.listContents(page, limit, lessonId);
+    const result = await contentService.listContents(page, limit, lessonId, fileType);
 
     return c.json({
       success: true,

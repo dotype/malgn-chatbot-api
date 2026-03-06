@@ -164,7 +164,8 @@ export default {
         parameters: [
           { name: 'page', in: 'query', schema: { type: 'integer', default: 1 }, description: '페이지 번호' },
           { name: 'limit', in: 'query', schema: { type: 'integer', default: 20, maximum: 100 }, description: '페이지당 개수' },
-          { name: 'lesson_id', in: 'query', schema: { type: 'integer' }, description: 'LMS 차시 ID 필터 (선택)' }
+          { name: 'lesson_id', in: 'query', schema: { type: 'integer' }, description: 'LMS 차시 ID 필터 (선택)' },
+          { name: 'file_type', in: 'query', schema: { type: 'string', enum: ['pdf', 'txt', 'md', 'srt', 'vtt', 'text', 'link'] }, description: '파일 유형 필터 (선택)' }
         ],
         responses: {
           '200': {

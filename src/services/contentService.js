@@ -20,27 +20,32 @@ export class ContentService {
   /**
    * 콘텐츠 목록 조회
    */
-  async listContents(page = 1, limit = 20, lessonId = null) {
+  async listContents(page = 1, limit = 20, lessonId = null, fileType = null) {
     const offset = (page - 1) * limit;
 
-    // 전체 개수 조회 (status = 1만)
-    const hasLessonFilter = lessonId !== null && lessonId !== undefined;
-    const countResult = hasLessonFilter
-      ? await this.env.DB.prepare('SELECT COUNT(*) as total FROM TB_CONTENT WHERE status = 1 AND lesson_id = ?').bind(lessonId).first()
-      : await this.env.DB.prepare('SELECT COUNT(*) as total FROM TB_CONTENT WHERE status = 1').first();
+    // 동적 WHERE 절 구성
+    const conditions = ['status = 1'];
+    const params = [];
+    if (lessonId !== null && lessonId !== undefined) {
+      conditions.push('lesson_id = ?');
+      params.push(lessonId);
+    }
+    if (fileType) {
+      conditions.push('file_type = ?');
+      params.push(fileType);
+    }
+    const whereClause = conditions.join(' AND ');
+
+    // 전체 개수 조회
+    const countResult = await this.env.DB.prepare(`SELECT COUNT(*) as total FROM TB_CONTENT WHERE ${whereClause}`).bind(...params).first();
     const total = countResult?.total || 0;
 
-    // 콘텐츠 목록 조회 (status = 1만)
-    const hasLessonFilter = lessonId !== null && lessonId !== undefined;
-    const listQuery = hasLessonFilter
-      ? `SELECT id, content_nm, filename, file_type, file_size, lesson_id, status, created_at
-         FROM TB_CONTENT WHERE status = 1 AND lesson_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`
-      : `SELECT id, content_nm, filename, file_type, file_size, lesson_id, status, created_at
-         FROM TB_CONTENT WHERE status = 1 ORDER BY created_at DESC LIMIT ? OFFSET ?`;
-
-    const { results } = hasLessonFilter
-      ? await this.env.DB.prepare(listQuery).bind(lessonId, limit, offset).all()
-      : await this.env.DB.prepare(listQuery).bind(limit, offset).all();
+    // 콘텐츠 목록 조회
+    const { results } = await this.env.DB
+      .prepare(`SELECT id, content_nm, filename, file_type, file_size, lesson_id, status, created_at
+         FROM TB_CONTENT WHERE ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+      .bind(...params, limit, offset)
+      .all();
 
     return {
       contents: results || [],
