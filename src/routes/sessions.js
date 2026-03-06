@@ -124,7 +124,7 @@ sessions.post('/', async (c) => {
 
     try {
       const body = await c.req.json();
-      userId = body.user_id || null;
+      userId = body.user_id != null ? parseInt(body.user_id, 10) : null;
       courseId = body.course_id || null;
       courseUserId = body.course_user_id || null;
       lessonId = body.lesson_id || null;

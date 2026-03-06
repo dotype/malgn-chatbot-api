@@ -556,7 +556,7 @@ export default {
                     example: [8, 9]
                   },
                   parent_id: { type: 'integer', description: '부모 세션 ID (자식 세션 생성 시)', default: 0, example: 0 },
-                  user_id: { type: 'string', description: '사용자 ID (선택)', nullable: true },
+                  user_id: { type: 'integer', description: '사용자 ID (선택)', nullable: true },
                   course_id: { type: 'integer', description: '코스 ID (LMS 연동, 선택)', nullable: true },
                   course_user_id: { type: 'integer', description: '코스 사용자 ID (LMS 연동, 선택)', nullable: true },
                   lesson_id: { type: 'integer', description: '레슨 ID (LMS 연동, 선택)', nullable: true },
@@ -915,7 +915,7 @@ export default {
         properties: {
           id: { type: 'integer' },
           parentId: { type: 'integer', description: '부모 세션 ID (0이면 부모 세션)', example: 0 },
-          userId: { type: 'string', nullable: true },
+          userId: { type: 'integer', nullable: true, description: '사용자 ID' },
           title: { type: 'string', description: '세션 제목' },
           settings: {
             type: 'object',
