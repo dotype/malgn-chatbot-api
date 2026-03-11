@@ -471,6 +471,20 @@ export default {
         parameters: [
           { name: 'id', in: 'path', required: true, schema: { type: 'integer' }, description: '콘텐츠 ID' }
         ],
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  choiceCount: { type: 'integer', minimum: 0, maximum: 10, default: 3, description: '4지선다 퀴즈 수' },
+                  oxCount: { type: 'integer', minimum: 0, maximum: 10, default: 2, description: 'OX 퀴즈 수' },
+                  count: { type: 'integer', minimum: 1, maximum: 20, description: '(하위호환) 총 퀴즈 수 (choice/ox 자동 분배)' }
+                }
+              }
+            }
+          }
+        },
         responses: {
           '200': {
             description: '퀴즈 재생성 결과',
