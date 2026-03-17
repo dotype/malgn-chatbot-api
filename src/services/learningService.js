@@ -103,11 +103,14 @@ export class LearningService {
 
     // 요약 예시 생성 (개수에 맞춤)
     const summaryExamples = Array.from({ length: summaryCount }, (_, i) => `요약 ${i + 1}`);
-    const questionExamples = Array.from({ length: recommendCount }, (_, i) => `추천 질문 ${i + 1}`);
+    const questionExamples = Array.from({ length: recommendCount }, (_, i) => ({
+      question: `추천 질문 ${i + 1}`,
+      answer: `질문 ${i + 1}에 대한 간결한 답변`
+    }));
 
     const systemPrompt = `${persona}
 
-당신은 교육 전문가로서 주어진 학습 콘텐츠를 분석하여 세션 제목, 학습 목표, 요약, 추천 질문을 생성해 주세요.
+당신은 교육 전문가로서 주어진 학습 콘텐츠를 분석하여 세션 제목, 학습 목표, 요약, 추천 질문과 답변을 생성해 주세요.
 
 반드시 아래 JSON 형식으로만 응답하세요:
 {
@@ -120,6 +123,7 @@ export class LearningService {
 ★★★ 매우 중요 - 개수 제한 ★★★
 - learningSummary: 정확히 ${summaryCount}개만 생성 (더 많거나 적으면 안됨)
 - recommendedQuestions: 정확히 ${recommendCount}개만 생성 (더 많거나 적으면 안됨)
+- recommendedQuestions의 각 항목은 반드시 {"question": "...", "answer": "..."} 형태
 
 규칙:
 1. 제목은 학습 내용의 핵심 주제를 15자 이내로 간결하게 표현
@@ -128,23 +132,22 @@ export class LearningService {
 4. 추천 질문은 정확히 ${recommendCount}개만 생성
 5. 한국어로 작성
 
-★★★ 추천 질문 생성 규칙 ★★★
+★★★ 추천 질문+답변 생성 규칙 ★★★
 
-반드시 콘텐츠에 나오는 실제 용어를 사용하여 질문을 만드세요.
+반드시 콘텐츠에 나오는 실제 용어를 사용하여 질문과 답변을 만드세요.
+답변은 콘텐츠 내용을 기반으로 2-3문장으로 간결하게 작성하세요.
 
-[올바른 질문 예시]
-- "단어란 무엇인가요?"
-- "구의 특징은 무엇인가요?"
-- "명사에는 어떤 것들이 있나요?"
-- "동사란 무엇인가요?"
-- "형용사의 역할은 무엇인가요?"
+[올바른 예시]
+- {"question": "단어란 무엇인가요?", "answer": "단어는 의미를 가진 가장 작은 언어 단위입니다. 문장을 구성하는 기본 요소로, 홀로 쓰일 수 있는 말의 단위입니다."}
+- {"question": "명사에는 어떤 것들이 있나요?", "answer": "명사는 사람, 장소, 사물의 이름을 나타내는 품사입니다. 고유명사와 보통명사로 나뉩니다."}
 
 [금지 - 절대 이렇게 생성하지 마세요]
 - 물결표(~) 사용 금지
 - "~란/은/는" 같은 템플릿 텍스트 금지
 - 콘텐츠에 없는 용어로 질문 금지
+- 답변 없이 질문만 생성하는 것 금지
 
-질문은 반드시 콘텐츠에서 언급된 핵심 개념(예: 단어, 구, 절, 명사, 동사 등)을 사용하세요.`;
+질문은 반드시 콘텐츠에서 언급된 핵심 개념을 사용하세요.`;
 
     const contentTitlesInfo = contentTitles.length > 0
       ? `\n\n학습 자료 제목: ${contentTitles.join(', ')}`
@@ -212,13 +215,20 @@ ${context}`;
         recommendedQuestions = recommendedQuestions.slice(0, recommendCount);
       }
 
-      // 템플릿 텍스트 필터링
+      // 템플릿 텍스트 필터링 및 Q&A 형식 정규화
       if (Array.isArray(recommendedQuestions)) {
+        // 기존 문자열 배열 → Q&A 객체 배열로 변환 (하위 호환)
+        recommendedQuestions = recommendedQuestions.map(q => {
+          if (typeof q === 'string') return { question: q, answer: '' };
+          if (q && typeof q === 'object' && q.question) return q;
+          return null;
+        }).filter(q => q !== null);
+
         // 물결표(~)가 포함된 템플릿 질문 필터링
-        const hasTemplatePlaceholder = recommendedQuestions.some(q => q.includes('~'));
+        const hasTemplatePlaceholder = recommendedQuestions.some(q => q.question.includes('~'));
         // "추천 질문 1" 같은 플레이스홀더 필터링
         const hasPlaceholder = recommendedQuestions.some(q =>
-          /^추천 질문 \d+$/.test(q.trim())
+          /^추천 질문 \d+$/.test(q.question.trim())
         );
         if (hasTemplatePlaceholder || hasPlaceholder) {
           console.warn('[LearningService] Template/placeholder text detected in questions, setting to null');
