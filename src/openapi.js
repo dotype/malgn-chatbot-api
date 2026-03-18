@@ -194,7 +194,7 @@ export default {
       },
       post: {
         summary: '콘텐츠 등록',
-        description: '텍스트, 링크, 파일(PDF/TXT/MD/SRT/VTT) 형식으로 콘텐츠를 등록합니다.\n\n처리 흐름:\n1. 텍스트 추출 → DB 저장\n2. 500자 단위 청크 분할 (100자 오버랩)\n3. 각 청크 임베딩 → Vectorize 저장\n4. (백그라운드) 퀴즈 자동 생성',
+        description: '텍스트, 링크, 파일(PDF/TXT/MD/SRT/VTT) 형식으로 콘텐츠를 등록합니다.\n\n처리 흐름:\n1. 텍스트 추출 → DB 저장\n2. 500자 단위 청크 분할 (100자 오버랩)\n3. 각 청크 임베딩 → Vectorize 저장\n\n※ 퀴즈는 세션 생성 시 설정에 맞게 자동 생성됩니다.',
         tags: ['Contents'],
         security: [{ bearerAuth: [] }],
         requestBody: {
@@ -479,7 +479,8 @@ export default {
                 properties: {
                   choiceCount: { type: 'integer', minimum: 0, maximum: 10, default: 3, description: '4지선다 퀴즈 수' },
                   oxCount: { type: 'integer', minimum: 0, maximum: 10, default: 2, description: 'OX 퀴즈 수' },
-                  count: { type: 'integer', minimum: 1, maximum: 20, description: '(하위호환) 총 퀴즈 수 (choice/ox 자동 분배)' }
+                  count: { type: 'integer', minimum: 1, maximum: 20, description: '(하위호환) 총 퀴즈 수 (choice/ox 자동 분배)' },
+                  difficulty: { type: 'string', enum: ['easy', 'normal', 'hard'], default: 'normal', description: '퀴즈 난이도' }
                 }
               }
             }
@@ -551,7 +552,7 @@ export default {
       },
       post: {
         summary: '세션 생성',
-        description: '학습 콘텐츠를 선택하여 새 채팅 세션을 생성합니다.\n\n**부모 세션** (parent_id = 0 또는 미지정):\n- content_ids 필수 (최소 1개)\n- 학습 목표, 요약, 추천 질문 자동 생성 (LLM 70B)\n- 학습 데이터 Vectorize 임베딩 저장\n\n**자식 세션** (parent_id > 0):\n- 부모의 콘텐츠/학습 데이터 공유\n- 동일 parent + course_user_id 조합이면 기존 자식 세션 반환\n- 독립 채팅 히스토리 보유',
+        description: '학습 콘텐츠를 선택하여 새 채팅 세션을 생성합니다.\n\n**부모 세션** (parent_id = 0 또는 미지정):\n- content_ids 필수 (최소 1개)\n- 학습 목표, 요약, 추천 질문(Q&A 쌍) 자동 생성 (LLM 70B)\n- 학습 데이터 Vectorize 임베딩 저장\n- 퀴즈 자동 생성 (설정에 맞게, 난이도 반영)\n\n**자식 세션** (parent_id > 0):\n- 부모의 콘텐츠/학습 데이터 공유\n- 동일 parent + course_user_id + lesson_id 조합이면 기존 자식 세션 반환\n- 독립 채팅 히스토리 보유',
         tags: ['Sessions'],
         security: [{ bearerAuth: [] }],
         requestBody: {
@@ -585,7 +586,8 @@ export default {
                       summaryCount: { type: 'integer', minimum: 1, maximum: 10, description: '요약 개수' },
                       recommendCount: { type: 'integer', minimum: 1, maximum: 10, description: '추천 질문 개수' },
                       choiceCount: { type: 'integer', minimum: 0, maximum: 10, default: 3, description: '4지선다 퀴즈 수' },
-                      oxCount: { type: 'integer', minimum: 0, maximum: 10, default: 2, description: 'OX 퀴즈 수' }
+                      oxCount: { type: 'integer', minimum: 0, maximum: 10, default: 2, description: 'OX 퀴즈 수' },
+                      quizDifficulty: { type: 'string', enum: ['easy', 'normal', 'hard'], default: 'normal', description: '퀴즈 난이도 (easy: 쉬움, normal: 보통, hard: 어려움)' }
                     }
                   }
                 }
@@ -595,7 +597,7 @@ export default {
         },
         responses: {
           '200': {
-            description: '기존 자식 세션 반환 (동일 parent + course_user_id 존재 시)',
+            description: '기존 자식 세션 반환 (동일 parent + course_user_id + lesson_id 존재 시)',
             content: {
               'application/json': {
                 schema: {
@@ -685,7 +687,8 @@ export default {
                       summaryCount: { type: 'integer', minimum: 1, maximum: 10, description: '요약 개수' },
                       recommendCount: { type: 'integer', minimum: 1, maximum: 10, description: '추천 질문 개수' },
                       choiceCount: { type: 'integer', minimum: 0, maximum: 10, description: '4지선다 퀴즈 수' },
-                      oxCount: { type: 'integer', minimum: 0, maximum: 10, description: 'OX 퀴즈 수' }
+                      oxCount: { type: 'integer', minimum: 0, maximum: 10, description: 'OX 퀴즈 수' },
+                      quizDifficulty: { type: 'string', enum: ['easy', 'normal', 'hard'], description: '퀴즈 난이도' }
                     }
                   }
                 }
@@ -716,7 +719,8 @@ export default {
                             summaryCount: { type: 'integer' },
                             recommendCount: { type: 'integer' },
                             choiceCount: { type: 'integer' },
-                            oxCount: { type: 'integer' }
+                            oxCount: { type: 'integer' },
+                            quizDifficulty: { type: 'string' }
                           }
                         }
                       }
@@ -944,7 +948,8 @@ export default {
               summaryCount: { type: 'integer', description: '요약 개수' },
               recommendCount: { type: 'integer', description: '추천 질문 개수' },
               choiceCount: { type: 'integer', description: '4지선다 퀴즈 수' },
-              oxCount: { type: 'integer', description: 'OX 퀴즈 수' }
+              oxCount: { type: 'integer', description: 'OX 퀴즈 수' },
+              quizDifficulty: { type: 'string', enum: ['easy', 'normal', 'hard'], description: '퀴즈 난이도' }
             }
           },
           learning: {
@@ -960,7 +965,17 @@ export default {
                 ],
                 nullable: true
               },
-              recommendedQuestions: { type: 'array', items: { type: 'string' }, description: '추천 질문 목록' }
+              recommendedQuestions: {
+                type: 'array',
+                description: '추천 질문+답변 목록 (Q&A 쌍)',
+                items: {
+                  type: 'object',
+                  properties: {
+                    question: { type: 'string', description: '추천 질문' },
+                    answer: { type: 'string', description: '답변 (콘텐츠 기반, 4-6문장)' }
+                  }
+                }
+              }
             }
           },
           contents: {

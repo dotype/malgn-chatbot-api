@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS TB_SESSION (
   recommend_count INTEGER DEFAULT 3,
   choice_count INTEGER DEFAULT 3,
   ox_count INTEGER DEFAULT 2,
+  quiz_difficulty TEXT DEFAULT 'normal',
   learning_goal TEXT,
   learning_summary TEXT,
   recommended_questions TEXT,
