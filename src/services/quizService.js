@@ -116,6 +116,52 @@ export class QuizService {
   }
 
   /**
+   * 콘텐츠가 영어 학습용인지 감지
+   * 영어 텍스트 비율이 높고 한국어가 섞여있거나, 어학 관련 패턴이 있으면 영어 학습으로 판단
+   */
+  detectEnglishLearning(content) {
+    const sample = content.substring(0, 2000);
+    // 영어 학습 관련 키워드 패턴
+    const englishLearningPatterns = [
+      /\b(vocabulary|grammar|pronunciation|listening|speaking|reading|writing)\b/i,
+      /\b(verb|noun|adjective|adverb|preposition|conjunction)\b/i,
+      /\b(tense|past tense|present tense|future tense)\b/i,
+      /\b(sentence|clause|phrase|paragraph)\b/i,
+      /영어|English|영문법|영단어|영어회화|어휘|문법|발음|듣기|말하기|읽기|쓰기/,
+      /\b(lesson|unit|chapter)\b.*\d+/i,
+    ];
+    const hasLearningPattern = englishLearningPatterns.some(p => p.test(sample));
+
+    // 영어 문자 비율 계산
+    const englishChars = (sample.match(/[a-zA-Z]/g) || []).length;
+    const koreanChars = (sample.match(/[\uAC00-\uD7AF]/g) || []).length;
+    const totalMeaningful = englishChars + koreanChars;
+    const englishRatio = totalMeaningful > 0 ? englishChars / totalMeaningful : 0;
+
+    // 영어 비율이 40% 이상이고 한국어도 있으면 영어 학습, 또는 영어 학습 패턴 발견
+    return (englishRatio > 0.4 && koreanChars > 10) || hasLearningPattern;
+  }
+
+  /**
+   * 영어 학습용 퀴즈 추가 지시사항
+   */
+  getEnglishLearningInstruction() {
+    return `
+★★★ 영어 학습 퀴즈 특별 규칙 (한국어 모국어 학습자 대상) ★★★
+- 퀴즈는 한국어로 출제하되, 영어 표현/단어/문장은 영어 원문 그대로 포함하세요.
+- 한국어 모국어 화자가 자주 틀리는 영어 표현, 문법, 어휘를 중점적으로 출제하세요.
+- 유형 예시:
+  · 어휘: "다음 중 'accomplish'의 의미로 가장 적절한 것은?"
+  · 문법: "'She suggested that he ___ early.' 빈칸에 들어갈 표현은?"
+  · 표현: "다음 중 'break a leg'의 올바른 의미는?"
+  · 한영 비교: "'그는 회의에 참석했다'를 영어로 바르게 표현한 것은?"
+  · 오류 수정: "다음 영어 문장 중 문법적으로 올바른 것은?"
+- 선택지에 영어 표현을 포함할 때는 의미 차이가 명확하도록 구성하세요.
+- 한국어 직역 오류, 콩글리시 표현 등을 오답 선택지로 활용하세요.
+`;
+  }
+
+  /**
    * Workers AI로 LLM 호출 (AI Gateway 사용)
    */
   async callWorkersAI(systemPrompt, userPrompt) {
@@ -144,6 +190,11 @@ export class QuizService {
    * 4지선다 퀴즈 생성 (최대 2회 재시도)
    */
   async generateChoiceQuizzes(context, count, difficulty = 'normal') {
+    const isEnglishLearning = this.detectEnglishLearning(context);
+    if (isEnglishLearning) {
+      console.log('[QuizService] English learning content detected');
+    }
+
     const systemPrompt = `당신은 교육 콘텐츠 전문가입니다. 주어진 내용을 바탕으로 4지선다 퀴즈를 생성해 주세요.
 
 반드시 아래 JSON 형식으로만 응답하세요:
@@ -185,7 +236,8 @@ export class QuizService {
    - 좋은 예: "자기소개하는 글 읽기"
 10. 학습 목표 목록, 목차, 차례 등을 그대로 선택지로 사용하지 마세요. 핵심 개념에 대한 이해도를 측정하는 문제를 출제하세요.
 
-${this.getDifficultyInstruction(difficulty)}`;
+${this.getDifficultyInstruction(difficulty)}
+${isEnglishLearning ? this.getEnglishLearningInstruction() : ''}`;
 
     const userPrompt = `다음 내용을 바탕으로 4지선다 퀴즈 ${count}개를 생성해 주세요.
 - 각 문제는 완전한 질문 형태로 작성
@@ -233,6 +285,22 @@ ${context.substring(0, 4000)}`;
    * OX 퀴즈 생성 (최대 3회 재시도)
    */
   async generateOXQuizzes(context, count, difficulty = 'normal') {
+    const isEnglishLearning = this.detectEnglishLearning(context);
+
+    const englishOXExamples = isEnglishLearning ? `
+★★★ 영어 학습 OX 퀴즈 예시 ★★★
+{
+  "question": "'I am looking forward to meet you'는 문법적으로 올바른 문장이다.",
+  "answer": "X",
+  "explanation": "'look forward to' 뒤에는 동명사(~ing)가 와야 합니다. 올바른 표현은 'I am looking forward to meeting you'입니다."
+}
+{
+  "question": "영어에서 'He suggested that she go early'의 'go'는 가정법 현재로 사용된 것이다.",
+  "answer": "O",
+  "explanation": "suggest, recommend 등의 동사 뒤에 that절이 올 때 동사 원형을 사용하는 것은 가정법 현재(subjunctive mood)입니다."
+}
+` : '';
+
     const systemPrompt = `당신은 교육 콘텐츠 전문가입니다. 주어진 내용을 바탕으로 OX 퀴즈를 생성해 주세요.
 
 반드시 아래 JSON 형식으로만 응답하세요:
@@ -256,7 +324,7 @@ ${context.substring(0, 4000)}`;
   "answer": "X",
   "explanation": "구는 두 개 이상의 단어들의 연결이지만, 주어와 동사가 반드시 필요하지 않습니다. 주어와 동사가 있으면 절이 됩니다."
 }
-
+${englishOXExamples}
 ★★★ 나쁜 OX 퀴즈 예시 (이렇게 만들지 마세요) ★★★
 {
   "question": "문학이란?",  <- 의문문은 O/X로 판단할 수 없음
@@ -281,7 +349,8 @@ ${context.substring(0, 4000)}`;
 7. JSON 배열만 출력하세요
 8. ★★★ PDF 메타데이터(작성자, 저자, 출판사, 발행일, 페이지 번호, 파일명, 문서 제목, 저작권 표시, ISBN, 머리글/바닥글 등)에 대한 문제는 절대 출제하지 마세요. 학습 내용 본문에 기반한 문제만 출제하세요.
 
-${this.getDifficultyInstruction(difficulty)}`;
+${this.getDifficultyInstruction(difficulty)}
+${isEnglishLearning ? this.getEnglishLearningInstruction() : ''}`;
 
     const userPrompt = `다음 내용을 바탕으로 OX 퀴즈 ${count}개를 생성해 주세요.
 - O와 X 문제를 골고루 섞어주세요

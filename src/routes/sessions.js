@@ -662,7 +662,10 @@ sessions.put('/:id', async (c) => {
       }, 400);
     }
 
-    // 설정 값 검증 및 기본값 적용
+    // 세션 기본 정보
+    const sessionNm = settings.sessionNm !== undefined ? settings.sessionNm : session.session_nm;
+
+    // AI 설정 값 검증 및 기본값 적용
     const persona = settings.persona ?? session.persona;
     const temperature = settings.temperature !== undefined
       ? Math.max(0, Math.min(1, settings.temperature))
@@ -689,22 +692,36 @@ sessions.put('/:id', async (c) => {
       : session.ox_count;
     const quizDifficulty = settings.quizDifficulty || session.quiz_difficulty || 'normal';
 
+    // 학습 메타데이터 (전달된 경우에만 업데이트, null 전달 시 초기화 가능)
+    const learningGoal = settings.learningGoal !== undefined
+      ? settings.learningGoal
+      : session.learning_goal;
+    const learningSummary = settings.learningSummary !== undefined
+      ? (typeof settings.learningSummary === 'object' ? JSON.stringify(settings.learningSummary) : settings.learningSummary)
+      : session.learning_summary;
+    const recommendedQuestions = settings.recommendedQuestions !== undefined
+      ? (typeof settings.recommendedQuestions === 'object' ? JSON.stringify(settings.recommendedQuestions) : settings.recommendedQuestions)
+      : session.recommended_questions;
+
     // 세션 업데이트
     await c.env.DB
       .prepare(`
         UPDATE TB_SESSION
-        SET persona = ?, temperature = ?, top_p = ?, max_tokens = ?,
+        SET session_nm = ?, persona = ?, temperature = ?, top_p = ?, max_tokens = ?,
             summary_count = ?, recommend_count = ?, choice_count = ?, ox_count = ?,
-            quiz_difficulty = ?, updated_at = CURRENT_TIMESTAMP
+            quiz_difficulty = ?,
+            learning_goal = ?, learning_summary = ?, recommended_questions = ?,
+            updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `)
-      .bind(persona, temperature, topP, maxTokens, summaryCount, recommendCount, choiceCount, oxCount, quizDifficulty, id)
+      .bind(sessionNm, persona, temperature, topP, maxTokens, summaryCount, recommendCount, choiceCount, oxCount, quizDifficulty, learningGoal, learningSummary, recommendedQuestions, id)
       .run();
 
     return c.json({
       success: true,
       data: {
         id,
+        sessionNm,
         settings: {
           persona,
           temperature,
@@ -715,9 +732,14 @@ sessions.put('/:id', async (c) => {
           choiceCount,
           oxCount,
           quizDifficulty
+        },
+        learning: {
+          learningGoal,
+          learningSummary,
+          recommendedQuestions
         }
       },
-      message: 'AI 설정이 업데이트되었습니다.'
+      message: '세션이 업데이트되었습니다.'
     });
 
   } catch (error) {
