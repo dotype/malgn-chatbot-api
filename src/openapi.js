@@ -663,7 +663,8 @@ export default {
         }
       },
       put: {
-        summary: '세션 AI 설정 업데이트',
+        summary: '세션 업데이트',
+        description: 'AI 설정, 세션 정보, 학습 메타데이터를 업데이트합니다.\n\n모든 필드는 선택적이며, 전달하지 않으면 기존값 유지, null 전달 시 초기화됩니다.\nlearningSummary, recommendedQuestions는 배열/객체 전달 시 자동 JSON 변환됩니다.',
         tags: ['Sessions'],
         security: [{ bearerAuth: [] }],
         parameters: [
@@ -680,6 +681,7 @@ export default {
                   settings: {
                     type: 'object',
                     properties: {
+                      sessionNm: { type: 'string', description: '세션 이름' },
                       persona: { type: 'string', description: 'AI 페르소나' },
                       temperature: { type: 'number', minimum: 0, maximum: 1, description: '온도 (0~1)' },
                       topP: { type: 'number', minimum: 0.1, maximum: 1, description: 'Top-P (0.1~1)' },
@@ -688,7 +690,33 @@ export default {
                       recommendCount: { type: 'integer', minimum: 1, maximum: 10, description: '추천 질문 개수' },
                       choiceCount: { type: 'integer', minimum: 0, maximum: 10, description: '4지선다 퀴즈 수' },
                       oxCount: { type: 'integer', minimum: 0, maximum: 10, description: 'OX 퀴즈 수' },
-                      quizDifficulty: { type: 'string', enum: ['easy', 'normal', 'hard'], description: '퀴즈 난이도' }
+                      quizDifficulty: { type: 'string', enum: ['easy', 'normal', 'hard'], description: '퀴즈 난이도' },
+                      learningGoal: { type: 'string', nullable: true, description: '학습 목표 (null 전달 시 초기화)' },
+                      learningSummary: {
+                        description: '학습 요약 (문자열 또는 배열, null 전달 시 초기화)',
+                        nullable: true,
+                        oneOf: [
+                          { type: 'string' },
+                          { type: 'array', items: { type: 'string' } }
+                        ]
+                      },
+                      recommendedQuestions: {
+                        description: '추천 질문 (문자열 또는 Q&A 배열, null 전달 시 초기화)',
+                        nullable: true,
+                        oneOf: [
+                          { type: 'string' },
+                          {
+                            type: 'array',
+                            items: {
+                              type: 'object',
+                              properties: {
+                                question: { type: 'string' },
+                                answer: { type: 'string' }
+                              }
+                            }
+                          }
+                        ]
+                      }
                     }
                   }
                 }
@@ -698,7 +726,7 @@ export default {
         },
         responses: {
           '200': {
-            description: '설정 업데이트 성공',
+            description: '세션 업데이트 성공',
             content: {
               'application/json': {
                 schema: {
@@ -709,6 +737,7 @@ export default {
                       type: 'object',
                       properties: {
                         id: { type: 'integer' },
+                        sessionNm: { type: 'string' },
                         settings: {
                           type: 'object',
                           properties: {
@@ -721,6 +750,14 @@ export default {
                             choiceCount: { type: 'integer' },
                             oxCount: { type: 'integer' },
                             quizDifficulty: { type: 'string' }
+                          }
+                        },
+                        learning: {
+                          type: 'object',
+                          properties: {
+                            learningGoal: { type: 'string', nullable: true },
+                            learningSummary: { type: 'string', nullable: true, description: 'JSON 문자열' },
+                            recommendedQuestions: { type: 'string', nullable: true, description: 'JSON 문자열' }
                           }
                         }
                       }
