@@ -1105,6 +1105,44 @@ sessions.post('/:id/quiz', async (c) => {
 });
 
 /**
+ * PUT /sessions/:id/quiz/:quizId
+ * 세션 퀴즈 수정
+ */
+sessions.put('/:id/quiz/:quizId', async (c) => {
+  try {
+    const id = parseInt(c.req.param('id'), 10);
+    const quizId = parseInt(c.req.param('quizId'), 10);
+
+    if (isNaN(id) || id <= 0 || isNaN(quizId) || quizId <= 0) {
+      return c.json({ success: false, error: { code: 'VALIDATION_ERROR', message: '유효한 ID가 필요합니다.' } }, 400);
+    }
+
+    const body = await c.req.json();
+    const { quizType, question, options, answer, explanation } = body;
+
+    if (quizType && !['choice', 'ox'].includes(quizType)) {
+      return c.json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'quizType은 choice 또는 ox이어야 합니다.' } }, 400);
+    }
+    if (quizType === 'choice' && options && (!Array.isArray(options) || options.length !== 4)) {
+      return c.json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'choice 타입은 4개의 options 배열이 필수입니다.' } }, 400);
+    }
+
+    const quizService = new QuizService(c.env);
+    const updated = await quizService.updateSessionQuiz(quizId, id, { quizType, question, options, answer, explanation });
+
+    if (!updated) {
+      return c.json({ success: false, error: { code: 'NOT_FOUND', message: '해당 세션의 퀴즈를 찾을 수 없습니다.' } }, 404);
+    }
+
+    return c.json({ success: true, data: updated, message: '퀴즈가 수정되었습니다.' });
+
+  } catch (error) {
+    console.error('Update session quiz error:', error);
+    return c.json({ success: false, error: { code: 'INTERNAL_ERROR', message: '퀴즈 수정 중 오류가 발생했습니다.' } }, 500);
+  }
+});
+
+/**
  * DELETE /sessions/:id/quiz/:quizId
  * 세션 퀴즈 삭제
  */

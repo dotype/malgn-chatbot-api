@@ -613,6 +613,46 @@ ${context.substring(0, 4000)}`;
   }
 
   /**
+   * 세션 퀴즈 수정
+   * @param {number} quizId - 퀴즈 ID
+   * @param {number} sessionId - 세션 ID (소유 확인)
+   * @param {Object} updates - 수정할 필드 (전달된 것만 업데이트)
+   * @returns {Object|null} 수정된 퀴즈 또는 null
+   */
+  async updateSessionQuiz(quizId, sessionId, updates) {
+    const quiz = await this.env.DB
+      .prepare('SELECT * FROM TB_QUIZ WHERE id = ? AND session_id = ? AND status = 1')
+      .bind(quizId, sessionId)
+      .first();
+
+    if (!quiz) return null;
+
+    const quizType = updates.quizType || quiz.quiz_type;
+    const question = updates.question || quiz.question;
+    const answer = updates.answer || quiz.answer;
+    const explanation = updates.explanation !== undefined ? updates.explanation : quiz.explanation;
+    const options = updates.options !== undefined
+      ? (Array.isArray(updates.options) ? JSON.stringify(updates.options) : updates.options)
+      : quiz.options;
+
+    await this.env.DB
+      .prepare('UPDATE TB_QUIZ SET quiz_type = ?, question = ?, options = ?, answer = ?, explanation = ? WHERE id = ?')
+      .bind(quizType, question, options, answer, explanation, quizId)
+      .run();
+
+    return {
+      id: quizId,
+      sessionId,
+      quizType,
+      question,
+      options: options ? JSON.parse(options) : null,
+      answer,
+      explanation,
+      position: quiz.position
+    };
+  }
+
+  /**
    * 세션 퀴즈 개별 삭제
    * @param {number} quizId - 퀴즈 ID
    * @param {number} sessionId - 세션 ID (소유 확인)
