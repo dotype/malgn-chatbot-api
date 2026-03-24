@@ -1171,6 +1171,46 @@ sessions.delete('/:id/quiz/:quizId', async (c) => {
 });
 
 /**
+ * DELETE /sessions/:id/messages
+ * 세션 메시지 초기화 (Soft Delete)
+ */
+sessions.delete('/:id/messages', async (c) => {
+  try {
+    const id = parseInt(c.req.param('id'), 10);
+
+    if (isNaN(id) || id <= 0) {
+      return c.json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: '유효한 세션 ID가 필요합니다.' }
+      }, 400);
+    }
+
+    const session = await c.env.DB
+      .prepare('SELECT id FROM TB_SESSION WHERE id = ? AND status = 1')
+      .bind(id)
+      .first();
+
+    if (!session) {
+      return c.json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: '세션을 찾을 수 없습니다.' }
+      }, 404);
+    }
+
+    await c.env.DB
+      .prepare('UPDATE TB_MESSAGE SET status = -1 WHERE session_id = ? AND status = 1')
+      .bind(id)
+      .run();
+
+    return c.json({ success: true, message: '대화 내용이 초기화되었습니다.' });
+
+  } catch (error) {
+    console.error('Clear session messages error:', error);
+    return c.json({ success: false, error: { code: 'INTERNAL_ERROR', message: '메시지 초기화 중 오류가 발생했습니다.' } }, 500);
+  }
+});
+
+/**
  * DELETE /sessions/:id
  * 세션 삭제 (Soft Delete)
  */
