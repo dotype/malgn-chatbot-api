@@ -202,13 +202,27 @@ chat.post('/stream', async (c) => {
       }
 
       console.log(`[PERF] LLM 전체: ${Date.now() - llmStart}ms, 총 요청: ${Date.now() - streamStart}ms`);
+      console.log(`[DEBUG] Full response length: ${fullResponse.length}, preview: ${fullResponse.substring(0, 100)}`);
 
-      // 완료 이벤트 전송
-      await stream.writeSSE({ event: 'done', data: JSON.stringify({ sources: prepared.sources, sessionId: prepared.sessionId }) });
+      // 빈 응답 처리
+      if (!fullResponse || fullResponse.trim().length === 0) {
+        fullResponse = '죄송합니다. 응답을 생성하지 못했습니다. 다시 질문해 주세요.';
+        await stream.writeSSE({ event: 'token', data: JSON.stringify({ response: fullResponse }) });
+      }
 
-      // DB 저장 (백그라운드)
-      if (prepared.sessionId && fullResponse) {
-        c.executionCtx.waitUntil(chatService.saveMessagesToDB(prepared.sessionId, message.trim(), fullResponse));
+      // 후처리: garbled text 필터링
+      const sanitized = chatService.sanitizeResponse(fullResponse);
+
+      // 완료 이벤트 전송 (정제된 전체 응답 포함)
+      await stream.writeSSE({ event: 'done', data: JSON.stringify({
+        sources: prepared.sources,
+        sessionId: prepared.sessionId,
+        sanitizedResponse: sanitized !== fullResponse ? sanitized : undefined
+      }) });
+
+      // DB 저장 (정제된 응답 저장)
+      if (prepared.sessionId && sanitized) {
+        c.executionCtx.waitUntil(chatService.saveMessagesToDB(prepared.sessionId, message.trim(), sanitized));
       }
     } catch (error) {
       console.error('Chat stream error:', error.message);

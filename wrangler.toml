@@ -112,7 +112,7 @@ index_name = "malgn-chatbot-vectors-user2"
 #    wrangler d1 create malgn-chatbot-db-<tenant_id>
 #    wrangler kv namespace create malgn-chatbot-kv-<tenant_id>
 #    wrangler r2 bucket create malgn-chatbot-files-<tenant_id>
-#    wrangler vectorize create malgn-chatbot-vectors-<tenant_id> --dimensions=768 --metric=cosine
+#    wrangler vectorize create malgn-chatbot-vectors-<tenant_id> --dimensions=1024 --metric=cosine
 #
 # 2. 위 템플릿을 복사하여 [env.<tenant_id>] 섹션 추가
 #    - 생성된 리소스 ID를 해당 섹션에 입력

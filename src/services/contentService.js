@@ -716,34 +716,40 @@ export class ContentService {
    */
   removePdfMetadataLines(text) {
     // PDF 메타데이터 필드 패턴 (줄 단위로 제거)
+    // key: value 및 key=value 형태 모두 감지
     const metadataPatterns = [
-      /^document\.pdf\s*$/i,
-      /^document\.docx\s*$/i,
-      /^document\.pptx\s*$/i,
+      /^document\.(pdf|docx|pptx)\s*$/i,
       /^Metadata\s*$/,
       /^Contents\s*$/,
-      /^PDFFormatVersion\b/i,
-      /^Creator\s*[:：]/i,
-      /^Producer\s*[:：]/i,
-      /^Author\s*[:：]/i,
-      /^Title\s*[:：]/i,
-      /^Subject\s*[:：]/i,
-      /^Keywords\s*[:：]/i,
-      /^CreationDate\s*[:：]/i,
-      /^ModDate\s*[:：]/i,
-      /^Language\s*[:：]/i,
-      /^dc[:：]/i,              // dc:title, dc:creator, dc:description 등
-      /^xmp[:：]/i,             // xmp:CreateDate, xmp:ModifyDate 등
-      /^xmpMM[:：]/i,           // xmpMM:DocumentID 등
-      /^pdf[:：]/i,             // pdf:PDFVersion 등
-      /^pdfaid[:：]/i,          // pdfaid:part 등
-      /^Tagged\s*[:：]/i,
-      /^Pages\s*[:：]\s*\d+\s*$/i,
-      /^Encrypted\s*[:：]/i,
-      /^Page\s*size\s*[:：]/i,
-      /^File\s*size\s*[:：]/i,
-      /^Optimized\s*[:：]/i,
-      /^PDF\s*version\s*[:：]/i,
+      /^PDFFormatVersion[=:]/i,
+      /^Creator[=:\s]/i,
+      /^Producer[=:\s]/i,
+      /^Author[=:\s]/i,
+      /^Title[=:\s]/i,
+      /^Subject[=:\s]/i,
+      /^Keywords[=:\s]/i,
+      /^CreationDate[=:\s]/i,
+      /^ModDate[=:\s]/i,
+      /^Language[=:\s]/i,
+      /^IsLinearized[=:\s]/i,
+      /^IsAcroFormPresent[=:\s]/i,
+      /^IsXFAPresent[=:\s]/i,
+      /^IsCollectionPresent[=:\s]/i,
+      /^IsSignaturesPresent[=:\s]/i,
+      /^Trapped[=:\s]/i,
+      /^dc[:：]/i,
+      /^xmp[:：]/i,
+      /^xmpMM[:：]/i,
+      /^pdf[:：]/i,
+      /^pdfaid[:：]/i,
+      /^Tagged[=:\s]/i,
+      /^Pages\s*[=:]\s*\d+\s*$/i,
+      /^Encrypted[=:\s]/i,
+      /^Page\s*size[=:\s]/i,
+      /^File\s*size[=:\s]/i,
+      /^Optimized[=:\s]/i,
+      /^PDF\s*version[=:\s]/i,
+      /^Page\s+\d+\s*$/,         // 빈 페이지 마커 (Page 1, Page 2 ...)
     ];
 
     const lines = text.split('\n');

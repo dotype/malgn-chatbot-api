@@ -119,6 +119,7 @@ sessions.post('/', async (c) => {
     let courseUserId = null;
     let lessonId = null;
     let contentIds = [];
+    let chatContentIds = null;
     let settings = {};
     let parentId = 0;
 
@@ -130,6 +131,7 @@ sessions.post('/', async (c) => {
       courseUserId = body.course_user_id || null;
       lessonId = body.lesson_id || null;
       contentIds = Array.isArray(body.content_ids) ? body.content_ids : [];
+      chatContentIds = Array.isArray(body.chat_content_ids) ? body.chat_content_ids : null;
       settings = typeof body.settings === 'string' ? JSON.parse(body.settings) : (body.settings || {});
       parentId = body.parent_id || 0;
       console.log('[Session POST] parsed settings:', JSON.stringify(settings));
@@ -235,8 +237,8 @@ sessions.post('/', async (c) => {
       const insertResult = await c.env.DB
         .prepare(`
           INSERT INTO TB_SESSION (parent_id, course_id, course_user_id, lesson_id, user_id,
-            persona, temperature, top_p, max_tokens, summary_count, recommend_count, choice_count, ox_count)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            persona, temperature, top_p, max_tokens, summary_count, recommend_count, choice_count, ox_count, chat_content_ids)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .bind(
           parentId, courseId, courseUserId, lessonId, userId,
@@ -247,7 +249,8 @@ sessions.post('/', async (c) => {
           parentSession.summary_count,
           parentSession.recommend_count,
           parentSession.choice_count,
-          parentSession.ox_count
+          parentSession.ox_count,
+          parentSession.chat_content_ids || null
         )
         .run();
 
@@ -324,8 +327,8 @@ sessions.post('/', async (c) => {
     const defaultPersona = '당신은 친절하고 전문적인 AI 튜터입니다. 학생들이 이해하기 쉽게 설명하고, 질문에 정확하게 답변해 주세요.';
     const insertResult = await c.env.DB
       .prepare(`
-        INSERT INTO TB_SESSION (parent_id, course_id, course_user_id, lesson_id, user_id, persona, temperature, top_p, max_tokens, summary_count, recommend_count, choice_count, ox_count, quiz_difficulty)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO TB_SESSION (parent_id, course_id, course_user_id, lesson_id, user_id, persona, temperature, top_p, max_tokens, summary_count, recommend_count, choice_count, ox_count, quiz_difficulty, chat_content_ids)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .bind(
         0,
@@ -341,7 +344,8 @@ sessions.post('/', async (c) => {
         settings.recommendCount ?? 3,
         settings.choiceCount ?? 3,
         settings.oxCount ?? 2,
-        settings.quizDifficulty || 'normal'
+        settings.quizDifficulty || 'normal',
+        chatContentIds ? JSON.stringify(chatContentIds) : null
       )
       .run();
 

@@ -15,14 +15,14 @@ export class ChatService {
     this.env = env;
     this.embeddingService = new EmbeddingService(env);
     this.quizService = new QuizService(env);
-    // Workers AI 사용 (지역 제한 없음)
-    this.llmModel = '@cf/meta/llama-3.1-8b-instruct';
+    // Workers AI 사용 (Gemma 3 12B - Google, 다국어 우수)
+    this.llmModel = '@cf/google/gemma-3-12b-it';
 
     // 기본 AI 설정
     this.persona = '당신은 친절하고 전문적인 AI 튜터입니다.';
-    this.temperature = 0.3;  // 기본값 0.3 (보수적)
-    this.topP = 0.3;         // 기본값 0.3 (보수적)
-    this.maxTokens = 1024;
+    this.temperature = 0.2;  // 기본값 0.2 (hallucination 방지)
+    this.topP = 0.2;         // 기본값 0.2 (hallucination 방지)
+    this.maxTokens = 512;
   }
 
   /**
@@ -72,15 +72,31 @@ export class ChatService {
    * @returns {Promise<{contentIds: number[], effectiveSessionId: number}>}
    */
   async getSessionContentIdsAndParent(sessionId) {
-    if (!sessionId) return { contentIds: [], effectiveSessionId: sessionId };
+    if (!sessionId) return { contentIds: [], chatContentIds: [], effectiveSessionId: sessionId };
 
     try {
       const session = await this.env.DB
-        .prepare('SELECT parent_id FROM TB_SESSION WHERE id = ? AND status = 1')
+        .prepare('SELECT parent_id, chat_content_ids FROM TB_SESSION WHERE id = ? AND status = 1')
         .bind(sessionId)
         .first();
 
       const effectiveSessionId = (session && session.parent_id > 0) ? session.parent_id : sessionId;
+
+      // 자식 세션이면 부모의 chat_content_ids 조회
+      let chatContentIdsRaw = session?.chat_content_ids;
+      if (session && session.parent_id > 0 && !chatContentIdsRaw) {
+        const parent = await this.env.DB
+          .prepare('SELECT chat_content_ids FROM TB_SESSION WHERE id = ? AND status = 1')
+          .bind(session.parent_id)
+          .first();
+        chatContentIdsRaw = parent?.chat_content_ids;
+      }
+
+      // chat_content_ids 파싱
+      let chatContentIds = [];
+      if (chatContentIdsRaw) {
+        try { chatContentIds = JSON.parse(chatContentIdsRaw); } catch { /* ignore */ }
+      }
 
       const { results } = await this.env.DB
         .prepare(`
@@ -91,13 +107,16 @@ export class ChatService {
         .bind(effectiveSessionId)
         .all();
 
+      const contentIds = (results || []).map(r => r.content_id);
+
       return {
-        contentIds: (results || []).map(r => r.content_id),
+        contentIds,
+        chatContentIds: chatContentIds.length > 0 ? chatContentIds : contentIds,
         effectiveSessionId
       };
     } catch (error) {
       console.error('Get session content IDs error:', error);
-      return { contentIds: [], effectiveSessionId: sessionId };
+      return { contentIds: [], chatContentIds: [], effectiveSessionId: sessionId };
     }
   }
 
@@ -194,23 +213,26 @@ export class ChatService {
 
     // 3. 규칙
     parts.push(`<rules>
-1. 오직 제공된 문서 정보만을 바탕으로 답변하세요.
-2. 문서에 없는 내용은 추측하지 마세요.
-3. 답변은 친절하고 명확하게, 반드시 간결하게 해주세요. 불필요한 반복이나 장황한 설명을 피하세요.
-4. 제공된 문서의 언어로 답변하세요. 외국어 공부인 경우 외국어를 포함하여 답변해도 됩니다.
-5. 문서에서 답을 찾을 수 없다면, "제공된 문서에서 해당 정보를 찾을 수 없습니다."라고 답변하세요.
-6. 이전 대화 내용을 참고하여 맥락에 맞는 답변을 해주세요.
-7. 학습자가 틀린 내용을 말하면 반드시 정정해 주세요. 절대로 틀린 내용에 동조하지 마세요. 문서를 근거로 올바른 정보를 알려주세요.
-8. "~이 맞아?", "~이 맞나요?" 같은 확인 질문에는 문서 내용과 대조하여 맞는지 틀린지 정확히 판단하세요.
-9. 답변은 3~5문장 이내로 핵심만 전달하세요. 예시는 1~2개만 들어주세요.
+★ 가장 중요한 규칙 ★
+- 반드시 <reference_documents>에 있는 내용만으로 답변하세요.
+- 문서에 언급되지 않은 내용은 절대 지어내지 마세요. 사실이라고 확신해도 문서에 없으면 답변하지 마세요.
+- 문서에서 관련 정보를 찾을 수 없으면 반드시 "제공된 학습 자료에서 해당 내용을 찾을 수 없습니다. 학습 자료와 관련된 질문을 해주세요."라고만 답변하세요.
+
+1. 반드시 한국어로 답변하세요. 영어 예문이 필요한 경우에만 영어를 사용하세요.
+2. 의미 없는 단어, 무작위 영단어, 알 수 없는 문자열을 절대 생성하지 마세요.
+3. 이전 대화 내용을 참고하여 맥락에 맞는 답변을 해주세요.
+4. 학습자가 틀린 내용을 말하면 문서를 근거로 정정해 주세요.
+5. "~이 맞아?" 같은 확인 질문에는 문서 내용과 대조하여 정확히 판단하세요.
+6. 개념을 설명할 때는 예시를 1~2개 포함하여 이해하기 쉽게 답변하세요.
+7. 답변이 불필요하게 길어지지 않도록 핵심 위주로 작성하되, 충분한 설명을 포함하세요.
 </rules>`);
 
     // 4. 출력 형식 가이드
     parts.push(`<output_format>
 - 핵심 내용은 **굵게** 강조하세요.
-- 여러 항목을 설명할 때는 번호 목록(1. 2. 3.)이나 불릿(-) 목록을 사용하세요.
-- 복잡한 개념은 단계별로 나누어 설명하되, 각 단계를 1~2문장으로 간결하게 쓰세요.
-- 같은 내용을 다른 표현으로 반복하지 마세요.
+- 여러 항목은 번호 목록(1. 2. 3.)이나 불릿(-) 목록을 사용하세요.
+- 예시는 1~2개만 들어주세요.
+- 같은 내용을 반복하지 마세요.
 </output_format>`);
 
     // 5. 참고 문서 (RAG 컨텍스트)
@@ -240,7 +262,7 @@ export class ChatService {
     if (settings.persona) this.persona = settings.persona;
     if (settings.temperature !== undefined) this.temperature = settings.temperature;
     if (settings.topP !== undefined) this.topP = settings.topP;
-    if (settings.maxTokens !== undefined) this.maxTokens = settings.maxTokens;
+    if (settings.maxTokens !== undefined) this.maxTokens = Math.min(settings.maxTokens, 512);
 
     // 세션 ID 사용 (숫자형)
     const currentSessionId = sessionId;
@@ -252,11 +274,13 @@ export class ChatService {
       this.getSessionLearningData(currentSessionId)
     ]);
     const allowedContentIds = contentResult.contentIds;
+    const chatContentIds = contentResult.chatContentIds;
     const effectiveSessionId = contentResult.effectiveSessionId;
 
     // 2. 벡터 검색 + 대화 내역 + 퀴즈 컨텍스트를 병렬 실행
+    // 채팅은 chatContentIds로 검색, 퀴즈 컨텍스트는 세션 콘텐츠만
     const [searchResults, chatHistory, quizContext] = await Promise.all([
-      this.searchSimilarDocuments(queryEmbedding, 5, allowedContentIds, effectiveSessionId),
+      this.searchSimilarDocuments(queryEmbedding, 5, chatContentIds, effectiveSessionId),
       this.getChatHistory(currentSessionId, 6),
       this.getQuizContext(allowedContentIds)
     ]);
@@ -323,8 +347,8 @@ export class ChatService {
 
       console.log('[ChatService] Vectorize search results:', results.matches?.length || 0, 'matches');
 
-      // 유사도 임계값 필터링 (0.5 이상 - 추천 질문도 매칭되도록 낮춤)
-      const threshold = 0.5;
+      // 유사도 임계값 필터링 (0.6 이상 - 무관한 청크 유입 방지)
+      const threshold = 0.6;
       let filtered = (results.matches || []).filter(
         match => match.score >= threshold
       );
@@ -517,11 +541,12 @@ export class ChatService {
       const result = await this.env.AI.run(this.llmModel, {
         messages,
         max_tokens: this.maxTokens,
-        temperature: this.temperature
+        temperature: this.temperature,
+        top_p: this.topP
       });
 
       if (result && result.response) {
-        return result.response;
+        return this.sanitizeResponse(result.response);
       }
 
       return '응답을 생성할 수 없습니다.';
@@ -529,6 +554,117 @@ export class ChatService {
       console.error('LLM generation error:', error);
       throw new Error('AI 응답 생성에 실패했습니다.');
     }
+  }
+
+  /**
+   * 응답 후처리 - garbled text 필터링
+   * LLM이 생성한 의미 없는 텍스트를 감지하고 제거
+   */
+  sanitizeResponse(text) {
+    if (!text) return text;
+
+    // 1단계: 괄호 안의 garbled text 제거
+    let cleaned = text.replace(/\([^)]{20,}\)/g, (match) => {
+      if (this.isGarbledText(match)) {
+        console.log('[Sanitize] Removed garbled parentheses:', match.substring(0, 60));
+        return '';
+      }
+      return match;
+    });
+
+    // 1.5단계: 인라인 외국어 스크립트 제거 (아랍어, 키릴문자 등이 포함된 구문)
+    cleaned = cleaned.replace(/[\u0400-\u04FF\u0600-\u06FF\u0590-\u05FF\u0E00-\u0E7F\u0900-\u097F][^\n]*$/gm, (match) => {
+      console.log('[Sanitize] Removed foreign script:', match.substring(0, 60));
+      return '';
+    });
+
+    // 2단계: 줄 단위 garbled 필터링
+    const lines = cleaned.split('\n');
+    const cleanLines = [];
+
+    for (const line of lines) {
+      if (this.isGarbledText(line)) {
+        console.log('[Sanitize] Removed garbled line:', line.substring(0, 80));
+        continue;
+      }
+      // 줄 내부의 garbled 꼬리 제거 (정상 텍스트 뒤에 갑자기 의미 없는 영단어 나열)
+      const sanitizedLine = this.removeGarbledTail(line);
+      cleanLines.push(sanitizedLine);
+    }
+
+    let result = cleanLines.join('\n').trim();
+    // 연속 빈 줄 정리
+    result = result.replace(/\n{3,}/g, '\n\n');
+
+    if (result.length < 10) {
+      return '죄송합니다. 답변을 생성하는 중 문제가 발생했습니다. 다시 질문해 주세요.';
+    }
+
+    return result;
+  }
+
+  /**
+   * 텍스트가 garbled인지 판별
+   */
+  isGarbledText(text) {
+    const trimmed = text.trim();
+    if (trimmed.length < 5) return false;
+
+    // 1. 허용되지 않는 외국어 스크립트 (아랍어, 키릴문자, 히브리어, 태국어, 힌디어 등)
+    if (/[\u0400-\u04FF\u0600-\u06FF\u0590-\u05FF\u0E00-\u0E7F\u0900-\u097F]/.test(trimmed)) return true;
+
+    // 2. 긴 영단어(10자+)가 2개 이상
+    const longGibberish = trimmed.match(/[a-zA-Z]{10,}/g) || [];
+    if (longGibberish.length >= 2) return true;
+
+    // 3. camelCase 코드 토큰이 3개 이상
+    const codeTokens = trimmed.match(/[a-z][A-Z][a-z]/g) || [];
+    if (codeTokens.length >= 3) return true;
+
+    // 4. 연속 영단어 나열 (5개 이상 영단어가 연속)
+    const words = trimmed.split(/\s+/);
+    if (words.length >= 5) {
+      let consecutive = 0;
+      let maxConsecutive = 0;
+      for (const w of words) {
+        if (/^[a-zA-Z\-\.]{2,}$/.test(w)) {
+          consecutive++;
+          maxConsecutive = Math.max(maxConsecutive, consecutive);
+        } else {
+          consecutive = 0;
+        }
+      }
+      if (maxConsecutive >= 5) return true;
+    }
+
+    // 5. .method(param 패턴 (코드 유출)
+    if (/\.[a-zA-Z]+\([a-zA-Z]+/.test(trimmed) && !/https?:/.test(trimmed)) {
+      const koreanChars = (trimmed.match(/[가-힣]/g) || []).length;
+      if (koreanChars < trimmed.length * 0.2) return true;
+    }
+
+    // 6. 영어 필러 문장 (AI가 자주 붙이는 불필요한 영어 마무리)
+    const fillerPatterns = /^(I hope this helps|Let me (know|explain)|Feel free to|Here'?s? (a|the)|Don'?t hesitate|If you have any)/i;
+    if (fillerPatterns.test(trimmed)) return true;
+
+    return false;
+  }
+
+  /**
+   * 줄 끝의 garbled 꼬리 제거
+   * 예: "I have eaten breakfast already. Nadu tipos primero..." → "I have eaten breakfast already."
+   */
+  removeGarbledTail(line) {
+    // 문장 부호(. ! ? 。) 이후에 의미 없는 영단어가 5개 이상 나오면 잘라냄
+    const match = line.match(/^(.*?[.!?。])\s+([A-Z][a-z]+ [a-z]+ [a-z]+ [a-z]+ [a-z]+.*)$/);
+    if (match) {
+      const tail = match[2];
+      if (this.isGarbledText(tail)) {
+        console.log('[Sanitize] Removed garbled tail:', tail.substring(0, 60));
+        return match[1];
+      }
+    }
+    return line;
   }
 
   /**
@@ -596,7 +732,7 @@ export class ChatService {
     if (settings.persona) this.persona = settings.persona;
     if (settings.temperature !== undefined) this.temperature = settings.temperature;
     if (settings.topP !== undefined) this.topP = settings.topP;
-    if (settings.maxTokens !== undefined) this.maxTokens = settings.maxTokens;
+    if (settings.maxTokens !== undefined) this.maxTokens = Math.min(settings.maxTokens, 512);
 
     const currentSessionId = sessionId;
     const t0 = Date.now();
@@ -608,13 +744,15 @@ export class ChatService {
       this.getSessionLearningData(currentSessionId)
     ]);
     const allowedContentIds = contentResult.contentIds;
+    const chatContentIds = contentResult.chatContentIds;
     const effectiveSessionId = contentResult.effectiveSessionId;
     const t1 = Date.now();
     console.log(`[PERF] 1단계 콘텐츠ID+임베딩+학습데이터: ${t1 - t0}ms`);
 
     // 벡터 검색 + 대화 내역 + 퀴즈 컨텍스트를 병렬 실행
+    // 채팅은 chatContentIds로 검색, 퀴즈 컨텍스트는 세션 콘텐츠만
     const [searchResults, chatHistory, quizContext] = await Promise.all([
-      this.searchSimilarDocuments(queryEmbedding, 5, allowedContentIds, effectiveSessionId),
+      this.searchSimilarDocuments(queryEmbedding, 5, chatContentIds, effectiveSessionId),
       this.getChatHistory(currentSessionId, 6),
       this.getQuizContext(allowedContentIds)
     ]);
@@ -654,6 +792,13 @@ export class ChatService {
     }
     messages.push({ role: 'user', content: message });
 
+    // 디버그: 프롬프트 크기 로깅
+    const totalChars = messages.reduce((sum, m) => sum + m.content.length, 0);
+    console.log(`[DEBUG] System prompt length: ${systemPrompt.length} chars`);
+    console.log(`[DEBUG] Total messages: ${messages.length}, Total chars: ${totalChars}`);
+    console.log(`[DEBUG] System prompt preview (first 500):`, systemPrompt.substring(0, 500));
+    console.log(`[DEBUG] Context length: ${context.length} chars`);
+
     const sources = this.formatSources(searchResults);
 
     return { messages, sources, sessionId: currentSessionId, noContext: false };
@@ -669,6 +814,7 @@ export class ChatService {
       messages,
       max_tokens: this.maxTokens,
       temperature: this.temperature,
+      top_p: this.topP,
       stream: true
     });
     return result;

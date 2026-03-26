@@ -10,8 +10,8 @@ export class LearningService {
   constructor(env) {
     this.env = env;
     this.embeddingService = new EmbeddingService(env);
-    // Workers AI 사용 - 70B 모델로 더 큰 컨텍스트 지원
-    this.model = '@cf/meta/llama-3.1-70b-instruct';
+    // Gemma 3 12B - Google, 다국어 우수, 80K 컨텍스트
+    this.model = '@cf/google/gemma-3-12b-it';
   }
 
   /**
@@ -75,6 +75,18 @@ export class LearningService {
   }
 
   /**
+   * PDF 메타데이터 및 빈 페이지 마커 제거
+   */
+  stripPdfMetadata(text) {
+    if (!text) return text;
+    let cleaned = text.replace(/^document\.pdf\s*\n?Metadata\n[\s\S]*?\n\n\n\nContents\n/i, '');
+    cleaned = cleaned.replace(/\n*Page \d+\n{2,}/g, '\n');
+    cleaned = cleaned.replace(/^(PDFFormatVersion|IsLinearized|IsAcroFormPresent|IsXFAPresent|IsCollectionPresent|IsSignaturesPresent|CreationDate|Creator|Trapped|Producer|ModDate|Language)=.*$/gm, '');
+    cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+    return cleaned;
+  }
+
+  /**
    * 콘텐츠에서 컨텍스트 텍스트 및 제목 추출
    * Workers AI 토큰 제한으로 인해 컨텍스트 길이를 제한합니다.
    */
@@ -96,6 +108,9 @@ export class LearningService {
 
     const contentTitles = (contentResults || []).map(r => r.content_nm);
     let context = (contentResults || []).map(r => r.content).filter(c => c).join('\n\n');
+
+    // PDF 메타데이터 제거
+    context = this.stripPdfMetadata(context);
 
     // 컨텍스트 길이 제한
     if (context.length > MAX_CONTEXT_LENGTH) {
@@ -187,6 +202,7 @@ export class LearningService {
 3. 요약은 핵심 내용을 정확히 ${summaryCount}개의 단문으로 작성 (배열 형태)
 4. 추천 질문은 정확히 ${recommendCount}개만 생성
 5. 한국어로 작성 (영어 원문 표현은 그대로 유지)
+6. 수학/과학 콘텐츠에서 수식이 필요하면 LaTeX를 사용하세요. 예: \\( x^2 + y^2 = r^2 \\), \\( \\frac{a}{b} \\)
 ${englishLearningInstruction}
 ★★★ 추천 질문+답변 생성 규칙 ★★★
 
@@ -246,13 +262,13 @@ ${context}`;
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt }
           ],
-          max_tokens: 1024,
+          max_tokens: 2048,
           temperature: temperature
         },
         {
           gateway: {
             id: 'malgn-chatbot',
-            skipCache: false
+            skipCache: true
           }
         }
       );
@@ -269,9 +285,11 @@ ${context}`;
 
       const content = result.response || '{}';
 
-      // JSON 파싱
+      // JSON 파싱 (LaTeX 이스케이프 보정)
       const jsonMatch = content.match(/\{[\s\S]*\}/);
-      const data = JSON.parse(jsonMatch ? jsonMatch[0] : '{}');
+      const rawJson = jsonMatch ? jsonMatch[0] : '{}';
+      const fixedJson = rawJson.replace(/\\(?!["\\/bfnrtu\\])/g, '\\\\');
+      const data = JSON.parse(fixedJson);
 
       // 제목이 없으면 콘텐츠 제목으로 대체
       const defaultSessionNm = contentTitles.length > 0
@@ -398,7 +416,7 @@ ${truncatedContext}`;
           max_tokens: 2048,
           temperature: 0.2
         },
-        { gateway: { id: 'malgn-chatbot', skipCache: false } }
+        { gateway: { id: 'malgn-chatbot', skipCache: true } }
       );
 
       if (!result?.response) return questions;

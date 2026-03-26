@@ -4,18 +4,18 @@
  * 텍스트를 벡터(숫자 배열)로 변환하는 서비스입니다.
  * Cloudflare Workers AI를 사용합니다. (지역 제한 없음)
  *
- * 사용 모델: @cf/baai/bge-base-en-v1.5 (768차원)
+ * 사용 모델: @cf/baai/bge-m3 (1024차원, 다국어 지원)
  */
 export class EmbeddingService {
   constructor(env) {
     this.env = env;
-    this.model = '@cf/baai/bge-base-en-v1.5';
+    this.model = '@cf/baai/bge-m3';
   }
 
   /**
    * 텍스트를 임베딩 벡터로 변환
    * @param {string} text - 변환할 텍스트
-   * @returns {Promise<number[]>} - 768차원 벡터
+   * @returns {Promise<number[]>} - 1024차원 벡터
    */
   async embed(text) {
     if (!text || text.trim().length === 0) {

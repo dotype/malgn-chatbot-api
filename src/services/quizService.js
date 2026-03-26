@@ -10,8 +10,8 @@
 export class QuizService {
   constructor(env) {
     this.env = env;
-    // 70B 모델로 더 정확한 퀴즈 생성
-    this.model = '@cf/meta/llama-3.1-70b-instruct';
+    // Gemma 3 12B - Google, 다국어 우수
+    this.model = '@cf/google/gemma-3-12b-it';
   }
 
   /**
@@ -29,9 +29,12 @@ export class QuizService {
       return [];
     }
 
-    // 콘텐츠가 너무 짧으면 스킵
+    // PDF 메타데이터 제거
+    content = this.stripPdfMetadata(content);
+
+    // 콘텐츠가 너무 짧으면 스킵 (메타데이터 제거 후)
     if (content.trim().length < 100) {
-      console.log('[QuizService] Content too short for quiz generation');
+      console.log('[QuizService] Content too short for quiz generation (after metadata removal)');
       return [];
     }
 
@@ -88,6 +91,31 @@ export class QuizService {
       .all();
 
     return (results || []).map(r => r.content).filter(c => c).join('\n\n');
+  }
+
+  /**
+   * PDF 메타데이터 및 빈 페이지 마커 제거
+   */
+  stripPdfMetadata(text) {
+    if (!text) return text;
+
+    // document.pdf\nMetadata\n... 부터 Contents 시작 전까지 제거
+    let cleaned = text.replace(/^document\.pdf\s*\n?Metadata\n[\s\S]*?\n\n\n\nContents\n/i, '');
+
+    // 빈 페이지 마커 제거 (Page N 다음에 내용 없이 바로 다음 Page)
+    cleaned = cleaned.replace(/\n*Page \d+\n{2,}/g, '\n');
+
+    // PDF 메타데이터 키=값 패턴 제거
+    cleaned = cleaned.replace(/^(PDFFormatVersion|IsLinearized|IsAcroFormPresent|IsXFAPresent|IsCollectionPresent|IsSignaturesPresent|CreationDate|Creator|Trapped|Producer|ModDate|Language)=.*$/gm, '');
+
+    // 연속 빈 줄 정리
+    cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+
+    if (cleaned.length < text.length * 0.5) {
+      console.log(`[QuizService] Stripped PDF metadata: ${text.length} → ${cleaned.length} chars`);
+    }
+
+    return cleaned;
   }
 
   /**
@@ -162,6 +190,20 @@ export class QuizService {
   }
 
   /**
+   * JSON 내 LaTeX 이스케이프 보정
+   * LLM이 \\( 대신 \( 를 출력하면 JSON 파싱 에러 발생
+   */
+  fixJsonLatex(jsonStr) {
+    // JSON 문자열 내에서 잘못된 이스케이프를 수정
+    // \( → \\(, \) → \\), \[ → \\[, \] → \\], \frac → \\frac 등
+    const fixed = jsonStr.replace(/\\(?!["\\/bfnrtu\\])/g, '\\\\');
+    if (fixed !== jsonStr) {
+      console.log('[QuizService] fixJsonLatex applied, diff chars:', fixed.length - jsonStr.length);
+    }
+    return fixed;
+  }
+
+  /**
    * Workers AI로 LLM 호출 (AI Gateway 사용)
    */
   async callWorkersAI(systemPrompt, userPrompt) {
@@ -178,7 +220,7 @@ export class QuizService {
       {
         gateway: {
           id: 'malgn-chatbot',
-          skipCache: false
+          skipCache: true
         }
       }
     );
@@ -195,46 +237,17 @@ export class QuizService {
       console.log('[QuizService] English learning content detected');
     }
 
-    const systemPrompt = `당신은 교육 콘텐츠 전문가입니다. 주어진 내용을 바탕으로 4지선다 퀴즈를 생성해 주세요.
+    const systemPrompt = `교육 콘텐츠 기반 4지선다 퀴즈를 JSON으로 생성하세요.
 
-반드시 아래 JSON 형식으로만 응답하세요:
-[
-  {
-    "question": "질문 내용",
-    "options": ["선택지1", "선택지2", "선택지3", "선택지4"],
-    "answer": 1,
-    "explanation": "정답 해설"
-  }
-]
+형식:
+[{"question": "질문", "options": ["A", "B", "C", "D"], "answer": 1, "explanation": "해설"}]
 
-★★★ 좋은 퀴즈 예시 ★★★
-{
-  "question": "다음 중 '절(Clause)'의 특징으로 올바른 것은?",
-  "options": ["의미를 나타내는 글자이다", "주어와 동사가 없다", "주어와 동사가 있으며 문장의 형태를 가진다", "단어 하나로 이루어진다"],
-  "answer": 3,
-  "explanation": "절은 두 개 이상의 단어들의 연결로, 주어와 동사가 나타나며 문장의 형태를 가집니다."
-}
-
-★★★ 나쁜 퀴즈 예시 (이렇게 만들지 마세요) ★★★
-{
-  "question": "단어, 구, 절 중 어느 것인지 고르시오.",  <- 무엇에 대한 질문인지 불명확
-  "options": ["단어", "구", "절", "별도 선택"],
-  ...
-}
-
-규칙:
-1. answer는 정답 선택지의 번호입니다 (1, 2, 3, 4 중 하나)
-2. options 배열에는 반드시 정확히 4개의 선택지가 포함되어야 합니다
-3. 질문은 반드시 완전한 문장으로 작성하고, 무엇을 묻는지 명확해야 합니다
-4. "다음 중 ~에 대한 설명으로 올바른 것은?", "~의 특징은 무엇인가?" 형태로 질문하세요
-5. 선택지에 "별도 선택", "해당 없음" 같은 모호한 답 금지
-6. 제공된 내용에 기반한 문제만 출제하세요
-7. JSON 배열만 출력하세요
-8. ★★★ PDF 메타데이터(작성자, 저자, 출판사, 발행일, 페이지 번호, 파일명, 문서 제목, 저작권 표시, ISBN, 머리글/바닥글 등)에 대한 문제는 절대 출제하지 마세요. 학습 내용 본문에 기반한 문제만 출제하세요.
-9. ★★★ 각 선택지는 반드시 짧고 명확한 하나의 개념/문장이어야 합니다. 쉼표로 여러 항목을 나열하지 마세요.
-   - 나쁜 예: "오늘의 공부, 자기소개하는 글 읽기, 자기소개 담화 완성하기를 공부"
-   - 좋은 예: "자기소개하는 글 읽기"
-10. 학습 목표 목록, 목차, 차례 등을 그대로 선택지로 사용하지 마세요. 핵심 개념에 대한 이해도를 측정하는 문제를 출제하세요.
+핵심 규칙:
+1. 질문만 읽고 답을 고를 수 있어야 합니다. 필요한 조건/수치를 질문에 모두 포함하세요.
+2. 핵심 학습 내용만 출제하세요. 강의 안내, 훈련 순서, 인사말, 목차, 메타데이터 문제는 금지입니다.
+3. options에 정확히 4개 선택지를 포함하세요. answer는 정답 번호(1~4)입니다.
+4. 수학/과학 콘텐츠에서 question, options, explanation 모두 수식은 LaTeX로 작성하세요. 예: \\( x + y = 5 \\)
+5. JSON 배열만 출력하세요. 다른 텍스트 없이 JSON만 응답하세요.
 
 ${this.getDifficultyInstruction(difficulty)}
 ${isEnglishLearning ? this.getEnglishLearningInstruction() : ''}`;
@@ -252,9 +265,13 @@ ${context.substring(0, 4000)}`;
       try {
         const content = await this.callWorkersAI(systemPrompt, userPrompt);
 
-        // JSON 파싱 (```json ... ``` 제거)
+        // JSON 파싱 (```json ... ``` 제거, LaTeX 이스케이프 보정)
         const jsonMatch = content.match(/\[[\s\S]*\]/);
-        const quizzes = JSON.parse(jsonMatch ? jsonMatch[0] : '[]');
+        const rawJson = jsonMatch ? jsonMatch[0] : '[]';
+        const jsonStr = this.fixJsonLatex(rawJson);
+        console.log(`[QuizService] Choice raw JSON (first 200):`, rawJson.substring(0, 200));
+        console.log(`[QuizService] Choice fixed JSON (first 200):`, jsonStr.substring(0, 200));
+        const quizzes = JSON.parse(jsonStr);
 
         const valid = quizzes
           .filter(q => Array.isArray(q.options) && q.options.length === 4)
@@ -266,9 +283,10 @@ ${context.substring(0, 4000)}`;
             explanation: q.explanation
           }));
 
-        if (valid.length > 0) {
-          console.log(`[QuizService] Choice quiz attempt ${attempt}: ${valid.length}/${count} valid`);
-          return valid;
+        const filtered = this.filterIrrelevantQuizzes(valid);
+        if (filtered.length > 0) {
+          console.log(`[QuizService] Choice quiz attempt ${attempt}: ${filtered.length}/${count} valid`);
+          return filtered;
         }
 
         console.warn(`[QuizService] Choice quiz attempt ${attempt}: no valid quizzes (all filtered), retrying...`);
@@ -301,54 +319,18 @@ ${context.substring(0, 4000)}`;
 }
 ` : '';
 
-    const systemPrompt = `당신은 교육 콘텐츠 전문가입니다. 주어진 내용을 바탕으로 OX 퀴즈를 생성해 주세요.
+    const systemPrompt = `교육 콘텐츠 기반 OX 퀴즈를 JSON으로 생성하세요.
 
-반드시 아래 JSON 형식으로만 응답하세요:
-[
-  {
-    "question": "~은/는 ~이다.",
-    "answer": "O",
-    "explanation": "정답 해설"
-  }
-]
+형식:
+[{"question": "~은/는 ~이다.", "answer": "O", "explanation": "해설"}]
 
-★★★ 좋은 OX 퀴즈 예시 ★★★
-{
-  "question": "절(Clause)은 주어와 동사가 포함된 단어들의 연결이다.",
-  "answer": "O",
-  "explanation": "절은 두 개 이상의 단어들이 연결되어 있으며, 주어와 동사가 나타나고 문장의 형태를 가집니다."
-}
-
-{
-  "question": "구(Phrase)는 반드시 주어와 동사를 포함해야 한다.",
-  "answer": "X",
-  "explanation": "구는 두 개 이상의 단어들의 연결이지만, 주어와 동사가 반드시 필요하지 않습니다. 주어와 동사가 있으면 절이 됩니다."
-}
+핵심 규칙:
+1. "~이다.", "~한다.", "~있다." 등으로 끝나는 서술문만 작성하세요. 의문문(?) 금지.
+2. 서술문만 읽고 O/X 판단이 가능해야 합니다. O와 X를 골고루 섞으세요.
+3. 핵심 학습 내용만 출제하세요. 강의 안내, 훈련 순서, 인사말, 목차, 메타데이터 문제는 금지입니다.
+4. 수학/과학 콘텐츠에서 question, explanation 모두 수식은 LaTeX로 작성하세요. 예: \\( x + y = 5 \\)
+5. JSON 배열만 출력하세요. 다른 텍스트 없이 JSON만 응답하세요.
 ${englishOXExamples}
-★★★ 나쁜 OX 퀴즈 예시 (이렇게 만들지 마세요) ★★★
-{
-  "question": "문학이란?",  <- 의문문은 O/X로 판단할 수 없음
-  ...
-}
-{
-  "question": "다음 중 올바른 것은?",  <- 선택형 질문은 O/X 퀴즈가 아님
-  ...
-}
-{
-  "question": "문학의 정의",  <- 명사구는 서술문이 아님
-  ...
-}
-
-규칙:
-1. answer는 "O" 또는 "X"입니다
-2. ★★★ 중요: 문제는 반드시 "~이다.", "~한다.", "~있다." 등으로 끝나는 완전한 서술문이어야 합니다
-3. ★★★ 금지: 물음표(?), "~이란", "~란 무엇", "다음 중" 등 의문문/선택형 질문 절대 금지
-4. 참/거짓이 명확하게 판단 가능해야 합니다
-5. O와 X 문제를 적절히 섞어서 출제하세요
-6. 제공된 내용에 기반한 문제만 출제하세요
-7. JSON 배열만 출력하세요
-8. ★★★ PDF 메타데이터(작성자, 저자, 출판사, 발행일, 페이지 번호, 파일명, 문서 제목, 저작권 표시, ISBN, 머리글/바닥글 등)에 대한 문제는 절대 출제하지 마세요. 학습 내용 본문에 기반한 문제만 출제하세요.
-
 ${this.getDifficultyInstruction(difficulty)}
 ${isEnglishLearning ? this.getEnglishLearningInstruction() : ''}`;
 
@@ -365,9 +347,10 @@ ${context.substring(0, 4000)}`;
       try {
         const content = await this.callWorkersAI(systemPrompt, userPrompt);
 
-        // JSON 파싱 (```json ... ``` 제거)
+        // JSON 파싱 (```json ... ``` 제거, LaTeX 이스케이프 보정)
         const jsonMatch = content.match(/\[[\s\S]*\]/);
-        const quizzes = JSON.parse(jsonMatch ? jsonMatch[0] : '[]');
+        const jsonStr = this.fixJsonLatex(jsonMatch ? jsonMatch[0] : '[]');
+        const quizzes = JSON.parse(jsonStr);
 
         // 유효성 검증: 의문문 필터링
         const valid = quizzes
@@ -380,9 +363,10 @@ ${context.substring(0, 4000)}`;
             explanation: q.explanation
           }));
 
-        if (valid.length > 0) {
-          console.log(`[QuizService] OX quiz attempt ${attempt}: ${valid.length}/${count} valid`);
-          return valid;
+        const filtered = this.filterIrrelevantQuizzes(valid);
+        if (filtered.length > 0) {
+          console.log(`[QuizService] OX quiz attempt ${attempt}: ${filtered.length}/${count} valid`);
+          return filtered;
         }
 
         console.warn(`[QuizService] OX quiz attempt ${attempt}: no valid quizzes, retrying...`);
@@ -444,6 +428,33 @@ ${context.substring(0, 4000)}`;
     }
 
     return false;
+  }
+
+  /**
+   * 퀴즈 후처리 필터 - 강의 안내/메타데이터 퀴즈 제거
+   */
+  filterIrrelevantQuizzes(quizzes) {
+    const blockedPatterns = [
+      /기초훈련|기본훈련|응용훈련/,
+      /몇\s*번.*문제.*풀/,
+      /번부터.*번까지/,
+      /문제를\s*풀어야/,
+      /\d+번\s*문제를?\s*참고/,          // "5번 문제를 참고", "2번 문제 참고"
+      /\(\s*\d+번\s*문제/,              // "(5번 문제..."
+      /학습\s*목표/,
+      /PDF|메타데이터|페이지\s*수/,
+      /강사|선생님.*소개/,
+      /수업\s*절차|수업\s*순서/,
+    ];
+
+    return quizzes.filter(q => {
+      const text = q.question || '';
+      const blocked = blockedPatterns.some(p => p.test(text));
+      if (blocked) {
+        console.log('[QuizService] Filtered irrelevant quiz:', text.substring(0, 60));
+      }
+      return !blocked;
+    });
   }
 
   /**
